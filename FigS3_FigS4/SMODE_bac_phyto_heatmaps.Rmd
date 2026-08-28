@@ -1,0 +1,309 @@
+---
+title: "SMODE_bac_phyto_heatmaps"
+author: "Shailja Gangrade"
+date: "2026-08-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+> **File description**
+> Analysis code (16S/18S community heatmaps) for data used in Gangrade et al. (2026), GRL.
+
+```{r}
+library(gplots)
+library(ggplot2)
+library(tidyverse)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(viridis)
+library(reshape)
+library(reshape2)
+library(pals)
+library(vegan)
+library(decontam)
+library(oce)
+library(cmocean)
+library(scatterpie)
+library(PieGlyph)
+library(khroma)
+library(pheatmap) ## for heatmap generation
+```
+
+```{r}
+load("SMODE-IOP1-IOP2-16S-18S-processed-with-CTD-metadata.Rdata") # used for GRL manuscript
+load("SMODE-IOP2-16S-18S-surface-ASVdata-metadata.Rdata") # load together with above Rdata, used for GRL manuscript
+
+# data_dir <- '/data'
+# fig_dir <- '/figures/'
+
+```
+
+
+```{r Create metadata / salinity designations}
+
+surface.only.16S <- which(metadata.2023$depth<=5 | metadata.2023$niskin==0)
+metadata.2023.surf <- metadata.2023[surface.only.16S,]
+
+bac.metadata.salNP <- metadata.2023.surf
+
+bac.metadata.salNP$NP <- bac.metadata.salNP$NO3 / bac.metadata.salNP$PO4
+
+
+sal_threshold <- 32.8
+sal_threshold_eddylow <- 32.95
+sal_threshold_eddyhigh <- 33.05
+NP_threshold <- 5
+
+
+bac.metadata.salNP <- bac.metadata.salNP %>%
+  mutate(
+    sal_case = case_when(
+      sal < sal_threshold ~ "low",
+      (sal >= sal_threshold & sal < sal_threshold_eddylow) ~ "transition",
+      (sal >= sal_threshold_eddylow & sal <sal_threshold_eddyhigh) ~ "eddy-core",
+      sal > sal_threshold_eddyhigh ~ "high",
+      is.na(sal) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+      ),
+    NP_case = case_when(
+      NP <= NP_threshold ~ "low",
+      NP > NP_threshold ~ "high",
+      is.na(NP) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+      )
+    )
+```
+
+```{r Select bacteria data and subset metadata}
+
+data.in <- unique.select.ra.2023.surf
+
+ann.col.16S.SNP <- bac.metadata.salNP[, c("sal_case", "NP_case","sal")]
+rownames(ann.col.16S.SNP) <- bac.metadata.salNP$sample_id
+
+```
+
+```{r Aggregate at the order level}
+
+## Step 1: Create a data frame holding relative abundance data for each ASV (rows) and each sample (columns) for IOP-2 (2023)
+
+df.16S.wOrder <- data.frame(t(data.in),check.names=F)
+## Step 2: Generate a column that holds the "Order" classification for each ASV sequence (row)
+df.16S.wOrder$order.names <- lab.row.bac.order.2023
+  ##unique(df.16S.wOrder$order.names) # to check
+## Step 3: Aggregate (sum) the relative abundance values by "Order"
+df.16S.OrderSums <- aggregate(.~order.names,data=df.16S.wOrder,FUN=sum)
+## Step 4: Change row names to the order names
+row.names(df.16S.OrderSums) <- df.16S.OrderSums$order.names
+## Step 5: Remove the order names column, as we don't need it anymore
+df.16S.OrderSums$order.names <- NULL
+## Step 6: Generate a column holding the total sums for each bacteria "order"
+df.16S.OrderSums$total <- rowSums(df.16S.OrderSums[,1:nrow(data.in)])
+## Step 7: Sort the entire data frame according to descending values of this "total" column
+df.16S.OrderSums <- df.16S.OrderSums[order(df.16S.OrderSums[, "total"], decreasing = TRUE), ]
+## Step 8: Fix any bacteria order names, such as changing "bacteria" to "Unclassified"
+rownames(df.16S.OrderSums)[rownames(df.16S.OrderSums) == "bacteria"] <- "Unclassified"
+## Step 9: Remove the "total" column as we do not need it any more.
+df.16S.OrderSums$total <- NULL
+
+## Step 10: Select top 10 orders by selecting only first 10 rows.
+df.16S.OrderSums.top10 <- df.16S.OrderSums[1:10,]
+
+
+```
+
+```{r Heatmap annotations}
+
+# SNP_annotation_colors <-  list(
+#   sal_case = c("high" = "#DDCC77",
+#                "low" = "#332288"),
+#   NP_case = c("high" = "maroon",
+#               "low" = "lightpink"),
+#   sal = cmocean("haline")(24))
+
+SNP_annotation_colors <-  list(
+  sal_case = c("high" = "yellow",
+               "eddy-core" = "lightgreen",
+               "transition" = "cyan",
+               "low" = "darkblue"),
+  NP_case = c("high" = "maroon",
+              "low" = "lightpink"),
+  sal = cmocean("haline")(24))
+
+## To match other plots:
+SNP_annotation_colors <-  list(
+  sal_case = c("high" = "#7CAE00",
+               "eddy-core" = "#F8766D",
+               "transition" = "#C77CFF",
+               "low" = "#00BFC4"),
+  NP_case = c("high" = "maroon",
+              "low" = "lightpink"),
+  sal = cmocean("haline")(24))
+
+
+# Row names of annotation matrix must match sample names (column names of data franme)
+identical(bac.metadata.salNP$sample_id, colnames(df.16S.OrderSums.top10))
+rownames(ann.col.16S.SNP) <- colnames(df.16S.OrderSums.top10)
+
+ann.col.16S.SNP.ordered.by.salinity <- ann.col.16S.SNP[order(ann.col.16S.SNP$sal), ]
+
+df.16S.OrderSums.ordered.by.salinity <- df.16S.OrderSums.top10[,rownames(ann.col.16S.SNP.ordered.by.salinity)]
+
+ann.col.16S.SNP.salonly <-  ann.col.16S.SNP.ordered.by.salinity[,c("sal_case","sal")]
+
+```
+
+
+```{r Bacteria heatmap}
+heat.col <- cmocean('balance')(64)
+heat.plot.16S.orders.SNP.zscore <- pheatmap(df.16S.OrderSums.ordered.by.salinity,
+                      col = heat.col, # choose a colour scale for your data
+                      cluster_rows = F,
+                      cluster_cols = FALSE, # set to FALSE if you want to remove the dendograms
+                      # cutree_cols = 4,
+                      # clustering_distance_cols = 'euclidean',
+                      # clustering_distance_rows = 'euclidean',
+                      # clustering_method = 'ward.D',
+                      # annotation_row = gene_functions_df, # row (gene) annotations
+                      annotation_col = ann.col.16S.SNP.salonly, # column (sample) annotations
+                      annotation_colors = SNP_annotation_colors, # colours for your annotations
+                      annotation_names_row = F, 
+                      annotation_names_col = T,
+                      annotation_legend = T,
+                      fontsize_row = 10,          # row label font size
+                      fontsize_col = 7,          # column label font size 
+                      angle_col = 45, # sample names at an angle,
+                      scale = "column",
+                      # legend_breaks = c(0, 0.25), # legend customisation
+                      # legend_labels = c("Low", "Medium", "High"), # legend customisation
+                      show_colnames = F, show_rownames = T, # displaying column and row names,
+                       main = "") 
+```
+```{r Phytoplankton data and metadata subsets}
+
+## Step 1: Create a data frame holding relative abundance data for each ASV (rows) and each sample (columns) for IOP-2 (2023)
+df.18S.phyto.wTaxa <- data.frame(t(unique.euk.select.2023.phyto.ra.surf),check.names=F)
+## Step 2: Generate a column that holds the "Order" classification for each ASV sequence (row)
+df.18S.phyto.wTaxa$taxa.names <- lab.row.euk.2023[which(lab.row.euk.phyto.2023=="phytoplankton")]
+  ##unique(df.18S.phyto.wOrder$order.names) # to check
+## Step 3: Aggregate (sum) the relative abundance values by "Order"
+df.18S.phyto.TaxaSums <- aggregate(.~taxa.names,data=df.18S.phyto.wTaxa,FUN=sum)
+## Step 4: Change row names to the order names
+row.names(df.18S.phyto.TaxaSums) <- df.18S.phyto.TaxaSums$taxa.names
+## Step 5: Remove the order names column, as we don't need it anymore
+df.18S.phyto.TaxaSums$taxa.names <- NULL
+## Step 6: Generate a column holding the total sums for each phyto "order"
+df.18S.phyto.TaxaSums$total <- rowSums(df.18S.phyto.TaxaSums[,1:nrow(unique.euk.select.2023.phyto.ra.surf)])
+## Step 7: Sort the entire data frame according to descending values of this "total" column
+df.18S.phyto.TaxaSums <- df.18S.phyto.TaxaSums[order(df.18S.phyto.TaxaSums[, "total"], decreasing = TRUE), ]
+## Step 8: Fix any phyto order names, such as changing "phyto" to "Unclassified"
+rownames(df.18S.phyto.TaxaSums)[rownames(df.18S.phyto.TaxaSums) == "phytoplankton"] <- "Unclassified"
+rownames(df.18S.phyto.TaxaSums)[rownames(df.18S.phyto.TaxaSums) == ""] <- "Unclassified"
+## Step 9: Remove the "total" column as we do not need it any more.
+df.18S.phyto.TaxaSums$total <- NULL
+
+## Step 10: Select top 10 orders by selecting only first 30 rows.
+df.18S.phyto.TaxaSums <- df.18S.phyto.TaxaSums[1:30,]
+
+############################ METADATA SUBSET ############################ 
+surface.only.euk <- which(metadata.18S.2023$depth<=5 | metadata.18S.2023$niskin==0)
+metadata.18S.2023.surf <- metadata.18S.2023[surface.only.euk,]
+
+phyto.metadata.salNP <- metadata.18S.2023.surf[which(metadata.18S.2023.surf$sample_id %in% colnames(df.18S.phyto.TaxaSums)), ]
+
+phyto.metadata.salNP$NP <- phyto.metadata.salNP$NO3 / phyto.metadata.salNP$PO4
+
+sal_threshold <- 32.8
+sal_threshold_eddylow <- 32.95
+sal_threshold_eddyhigh <- 33.05
+NP_threshold <- 5
+
+phyto.metadata.salNP <- phyto.metadata.salNP %>%
+  mutate(
+    sal_case = case_when(
+      sal < sal_threshold ~ "low",
+      (sal >= sal_threshold & sal < sal_threshold_eddylow) ~ "transition",
+      (sal >= sal_threshold_eddylow & sal <sal_threshold_eddyhigh) ~ "eddy-core",
+      sal > sal_threshold_eddyhigh ~ "high",
+      is.na(sal) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+      ),
+    NP_case = case_when(
+      NP <= NP_threshold ~ "low",
+      NP > NP_threshold ~ "high",
+      is.na(NP) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+      )
+    )
+```
+
+```{r Phytoplankton heatmap annotations}
+
+phyto.metadata.salNP <- phyto.metadata.salNP %>%
+  filter(!str_detect(sample_id, "blank.18S.exp."))
+ann.col.18S.phyto.SNP <- phyto.metadata.salNP[, c("sal_case", "NP_case","sal")]
+rownames(ann.col.18S.phyto.SNP) <- phyto.metadata.salNP$sample_id
+
+SNP_annotation_colors <-  list(
+  sal_case = c("high" = "yellow",
+               "eddy-core" = "lightgreen",
+               "transition" = "cyan",
+               "low" = "darkblue"),
+  NP_case = c("high" = "maroon",
+              "low" = "lightpink"),
+  sal = cmocean("haline")(24))
+
+## To match other plots:
+SNP_annotation_colors <-  list(
+  sal_case = c("high" = "#7CAE00",
+               "eddy-core" = "#F8766D",
+               "transition" = "#C77CFF",
+               "low" = "#00BFC4"),
+  NP_case = c("high" = "maroon",
+              "low" = "lightpink"),
+  sal = cmocean("haline")(24))
+
+# Row names of annotation matrix must match sample names (column names of data franme)
+identical(phyto.metadata.salNP$sample_id, colnames(df.18S.phyto.TaxaSums))
+
+ann.col.18S.phyto.SNP.ordered.by.salinity <- ann.col.18S.phyto.SNP[order(ann.col.18S.phyto.SNP$sal), ]
+
+df.18S.phyto.TaxaSums.ordered.by.salinity <- df.18S.phyto.TaxaSums[,rownames(ann.col.18S.phyto.SNP.ordered.by.salinity)]
+
+ann.col.18S.phyto.SNP.salonly <-  ann.col.18S.phyto.SNP.ordered.by.salinity[,c("sal_case","sal")]
+
+```
+
+```{r Plot phytoplankton heatmap}
+
+heat.col <- cmocean('balance')(64)
+heat.plot.18S.phyto.taxa.SNP.zscore <- pheatmap(df.18S.phyto.TaxaSums.ordered.by.salinity ,
+                      col = heat.col, # choose a colour scale for your data
+                      cluster_rows = F,
+                      cluster_cols = FALSE, # set to FALSE if you want to remove the dendograms
+                      # cutree_cols = 4,
+                      # clustering_distance_cols = 'euclidean',
+                      # clustering_distance_rows = 'euclidean',
+                      # clustering_method = 'ward.D',
+                      # annotation_row = gene_functions_df, # row (gene) annotations
+                      annotation_col = ann.col.18S.phyto.SNP.salonly,#ann.col.18S.phyto.SNP, # column (sample) annotations
+                      annotation_colors = SNP_annotation_colors, # colours for your annotations
+                      annotation_names_row = F, 
+                      annotation_names_col = T,
+                      annotation_legend = T,
+                      fontsize_row = 10,          # row label font size
+                      fontsize_col = 7,          # column label font size 
+                      angle_col = 45, # sample names at an angle,
+                      scale = "column",
+                      # legend_breaks = c(0, 0.25), # legend customisation
+                      # legend_labels = c("Low", "Medium", "High"), # legend customisations
+                      show_colnames = F, show_rownames = T, # displaying column and row names,
+                      main = "") 
+
+```
+
+
+

@@ -1,0 +1,804 @@
+---
+title: "SMODE_PROCESS_DATA"
+author: "Shailja Gangrade"
+date: "2026-08-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+> **File description**
+> Processing code for sequencing data used in Gangrade et al. (2026), GRL.
+
+## Load libraries
+
+```{r}
+suppressPackageStartupMessages({ # load packages quietly
+
+  library(gplots)
+  library(ggplot2)
+  library(tidyverse)
+  library(tidyr)
+  library(plyr)
+  library(dplyr)
+  library(viridis)
+  library(reshape)
+  library(reshape2)
+  library(pals)
+  library(vegan)
+  library(decontam)
+  library(oce)
+  library(cmocean)
+})
+```
+
+## Load in data
+```{r load ASVs data}
+# setwd('/data/')
+# fig_dir <- '/figures/'
+## Load Rdata (see 0_read_data for loading this data)
+load('20240407_SMODE_20240224_SMODE.Rdata')
+
+```
+
+## Join data sets, clean up, and subsample data
+```{r join and decontaminate ASVs data}
+
+############# Join the bacteria and archaea datasets ############# 
+
+## This presumes you're using a cross-domain primer and it therefore makes
+## sense to analyze these data together.
+
+unique <- merge(unique.bac, unique.arc, by = 0, all = T)
+tally <- merge(tally.bac, tally.arc, by = 0, all = T)
+
+row.names(unique) <- unique$Row.names
+row.names(tally) <- tally$Row.names
+
+unique$Row.names <- NULL
+tally$Row.names <- NULL
+
+## convert NAs to 0
+
+unique[is.na(unique)] <- 0
+tally[is.na(tally)] <- 0
+
+unique.euk[is.na(unique.euk)] <- 0
+tally.euk[is.na(tally.euk)] <- 0
+
+####### Identify and eliminate contaminated samples ########
+
+## Examine the 'blank' sample to employ decontamination
+
+## Check the library size for the 'blank' sample
+rowSums(unique["blank.16S.exp." ,])
+rowSums(unique.euk["blank.18S.exp." ,])
+
+## Check for contaminants, using prevalence method and a "blank" negative control sample.
+  ## The default threshold = 0.1. This means a probability of 0.1 in the statistical test being performed.
+# library(decontam)
+
+## Identify contaminants in 16S data
+unique.contam <- as.matrix(unique)
+unique.contam.is.control <- row.names(unique)=="blank.16S.exp."
+contamdf<- isContaminant(unique.contam, method="prevalence", neg=unique.contam.is.control)
+# table(contamdf$contaminant)
+# head(which(contamdf$contaminant))
+contam_asvs <- (contamdf[contamdf$contaminant == TRUE, ]) # pull out ASV IDs for contaminating ASVs
+## See which taxa are contaminants
+contam.taxa <- map.bac[row.names(contam_asvs), 'global_edge_num']
+contam.taxa <- taxa.bac[contam.taxa, 'taxon']
+contam.taxa
+
+## Identify contaminants in 18S data
+unique.euk.contam <- as.matrix(unique.euk)
+unique.euk.contam.is.control <- row.names(unique.euk)=="blank.18S.exp."
+contamdf.euk <- isContaminant(unique.euk.contam, method="prevalence", neg=unique.euk.contam.is.control)
+# table(contamdf.euk$contaminant)
+# head(which(contamdf.euk$contaminant))
+contam_asvs.euk <- (contamdf.euk[contamdf.euk$contaminant == TRUE, ]) # pull out ASV IDs for contaminating ASVs
+## See which taxa are contaminants
+contam.taxa.euk <- map.euk[row.names(contam_asvs.euk), 'global_edge_num']
+contam.taxa.euk <- taxa.euk[contam.taxa.euk, 'taxon']
+contam.taxa.euk
+
+## Drop ASVs found in contam_asvs
+unique.decontam <- unique[,!colnames(unique) %in% row.names(contam_asvs)]
+unique.euk.decontam <- unique.euk[,!colnames(unique.euk) %in% row.names(contam_asvs.euk)]
+
+
+########### Eliminate libraries below size threshold ###################### 
+## You should pick something that works for your sample set.  In practice
+## we try to avoid libraries with fewer than 5000 reads.
+## Here, we use the approach of eliminating libraries that are below the
+## 5th percentile (i.e. we eliminate the lowest 5% of library sizes and keep
+## 5% of the samples/libraries).
+
+# percentiles <- c(0.05, 0.25, 0.5, 0.75, 0.95) # use this to view different percentile values
+# libthresh.vals <- quantile(rowSums(unique.euk.decontam), percentiles)
+
+libthresh.16S <- quantile(rowSums(unique.decontam), 0.05)
+libthresh.18S <- quantile(rowSums(unique.euk.decontam), 0.05)
+
+tally.select <- tally[rowSums(tally) > libthresh.16S,]
+unique.select <- unique.decontam[rowSums(unique.decontam) > libthresh.16S,]
+
+tally.euk.select <- tally[rowSums(tally.euk) > libthresh.18S,]
+unique.euk.select <- unique.euk.decontam[rowSums(unique.euk.decontam) > libthresh.18S,]
+
+## OPTIONAL. Drop a specific library or libraries, such as a library
+## that you know is bad or have some reason for not wanting to analyze further.
+
+unique.select <- unique.select[grep('SRR14129902.16S.exp.', row.names(unique.select), invert = T),]
+tally.select <- tally.select[grep('SRR14129902.16S.exp.', row.names(tally.select), invert = T),]
+
+unique.euk.select <- unique.euk.select[grep('SRR14129902.18S.exp.', row.names(unique.euk.select), invert = T),]
+tally.euk.select <- tally.euk.select[grep('SRR14129902.18S.exp.', row.names(tally.euk.select), invert = T),]
+
+## If you dropped any libraries, you probably want this reflected in your
+## sample data file as well.
+
+data.bac.select <- data.bac[row.names(unique.select),]
+data.arc.select <- data.arc[row.names(unique.select),]
+
+## If not...
+
+# data.bac.select <- data.bac
+# data.arc.select <- data.arc
+
+
+########### Eliminate ASVs below a certain abundance threshold. ########### 
+## In general you should at least get rid of everything of
+## abundance = 1 (total abundance of ASV across samples),
+## which greatly reduces the size of your data frame.
+## Typically we set the threshold at 10.
+
+abundthresh <- 10 
+unique.select <- unique.select[,colSums(unique.select) > abundthresh]
+unique.euk.select <- unique.euk.select[,colSums(unique.euk.select) > abundthresh]
+
+## Drop any problematic taxa, for example, that you think are mitochondria or chloroplasts.
+
+drop.asvs.by.taxa <- function(unique.data, map, taxa, target_taxa, rank){
+  keep.edges <- row.names(taxa)[which(taxa[,rank] != target_taxa)]
+  keep.asvs <- row.names(map)[which(map$global_edge_num %in% keep.edges)]
+  selected <- unique.data[,which(colnames(unique.data) %in% keep.asvs)]
+  return(selected)    
+}
+
+unique.select <- drop.asvs.by.taxa(unique.select, map.bac, taxa.bac, 'Candidatus Nasuia deltocephalinicola', 'taxon')
+unique.select <- drop.asvs.by.taxa(unique.select, map.bac, taxa.bac, 'Candidatus Carsonella ruddii', 'taxon')
+
+## Drop "Zea_mays"(corn) from eukaryotes
+unique.euk.select <- drop.asvs.by.taxa(unique.euk.select, map.euk, taxa.euk, 'Zea_mays', 'taxon')
+
+## NOTE: At this point, libraries may have < 5000 reads because we eliminated some ASVs (which were contribtued some number of counts to the total library size)
+
+######## Check library sizes of a subset of the data ########
+
+# Let's take a closer look at library sizes now.
+## Let's just look for samples from the S-MODE IOP-2 cruise (2023 data set)
+
+# nm <- row.names(unique.select) # Obtain all sample names
+# only_2023 <- nm %in% grep("2023", nm, value = TRUE) # obtain the indices of the data only from 2023 (SMODE IOP-2)
+# library.df <- as.data.frame(subset(unique.select, only_2023)) # subset the data and make sure it is a data frame (for ggplot)
+# library.df$LibrarySize <- rowSums(library.df) # generate a column that includes library size for each sample
+# library.df$ID <- substr(row.names(library.df),17,21) # truncate the Sample ID names
+# 
+# ggplot(data=library.df, aes(x=as.factor(ID),y=LibrarySize))+
+#   geom_col()
+
+nm <- row.names(unique.select) # Obtain all sample names
+only_2023 <- nm %in% grep("2023", nm, value = TRUE) # obtain the indices of the data only from 2023 (SMODE IOP-2)
+only_2022 <- nm %in% grep("2022", nm, value = TRUE) # obtain the indices of the data only from 2022 (SMODE IOP-1)
+
+
+library.df.2022 <- as.data.frame(subset(unique.euk.select, only_2022)) # subset the data and make sure it is a data frame (for ggplot)
+library.df.2022$LibrarySize <- rowSums(library.df.2022) # generate a column that includes library size for each sample
+library.df.2022$ID <- substr(row.names(library.df.2022),17,21) # truncate the Sample ID names
+
+ggplot(data=library.df.2022, aes(x=as.factor(ID),y=LibrarySize))+
+  geom_col()
+
+library.df.2023 <- as.data.frame(subset(unique.euk.select, only_2023)) # subset the data and make sure it is a data frame (for ggplot)
+library.df.2023$LibrarySize <- rowSums(library.df.2023) # generate a column that includes library size for each sample
+library.df.2023$ID <- substr(row.names(library.df.2023),17,21) # truncate the Sample ID names
+
+ggplot(data=library.df, aes(x=as.factor(ID),y=LibrarySize))+
+  geom_col()
+
+```
+## Calculate relative abundance
+```{r relative abundance}
+
+################# CALCULATE RELATIVE ABUNDANCE  ################# 
+
+# Calculate relative abundance (proportion normalization)
+  # Counts of each ASV are found in unique.select
+  # This computes the counts of each ASV divided by the total number of ASVs in each sample (library size)
+
+# unique.select.ra <- unique.select/rowSums(unique.select) 
+# rowSums(unique.select.ra) ## sanity check
+
+
+## Another way of calculating relative abundance is to use decostand()
+unique.select.ra <- decostand(unique.select,method="total",MARGIN=1, na.rm=TRUE)
+unique.euk.select.ra <- decostand(unique.euk.select,method="total",MARGIN=1, na.rm=TRUE)
+
+
+# rowSums(unique.select.ra) ## sanity check
+rowSums(unique.euk.select.ra) ## sanity check
+        
+## Hellinger-transformed RA
+unique.select.ra.helling <- decostand(unique.select, method="hellinger")
+unique.euk.select.ra.helling <- decostand(unique.euk.select, method="hellinger")
+
+```
+
+# Get taxonomy for ASVs
+```{r get taxonomy}
+## Get taxonomy for ASVs
+
+## Set up functions for extracting 'taxon' name from taxa table
+get.names <- function(unique.data, domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'taxon']
+  unique.lab.Row[unique.lab.Row == ""] <- domain # Replace blank with domain name.
+  unique.lab.Row[is.na(unique.lab.Row)] <- domain # Replace NA with domain name.
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'phylum' name from taxa table
+get.names.phyla <- function(unique.data, domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'phylum']
+  unique.lab.Row[unique.lab.Row == ""] <- domain
+  unique.lab.Row[is.na(unique.lab.Row)] <- domain 
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'order' name from taxa table
+get.names.order <- function(unique.data,domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'order']
+  unique.lab.Row[unique.lab.Row == ""] <- domain
+  unique.lab.Row[is.na(unique.lab.Row)] <- domain 
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'class' name from taxa table
+get.names.class<- function(unique.data,domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'class']
+  unique.lab.Row[unique.lab.Row == ""] <- 'Unclassified'
+  unique.lab.Row[is.na(unique.lab.Row)] <- 'Unclassified' 
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'division' name from taxa table (euk only)
+get.names.division <- function(unique.data,domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'division']
+  unique.lab.Row[unique.lab.Row == ""] <- 'Unclassified'
+  unique.lab.Row[is.na(unique.lab.Row)] <- 'Unclassified'
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'species' name from taxa table
+get.names.species <- function(unique.data,domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'species']
+  unique.lab.Row[unique.lab.Row == ""] <- 'Unclassified Sp.'
+  unique.lab.Row[is.na(unique.lab.Row)] <- 'Unclassified Sp.'
+  return(unique.lab.Row)
+}
+
+## Set up functions for extracting 'genus' name from taxa table
+get.names.genus <- function(unique.data,domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'genus']
+  unique.lab.Row[unique.lab.Row == ""] <- 'Unclassified'
+  unique.lab.Row[is.na(unique.lab.Row)] <- 'Unclassified'
+  return(unique.lab.Row)
+}
+
+## Obtain taxa names and combine between archaea and bacteria
+lab.row.bac <- get.names(unique.select,'bacteria', map.bac, taxa.bac) # Length of lab.row.bac = length of unique.select (# of ASVs)
+lab.row.arc <- get.names(unique.select,'archaea', map.arc, taxa.arc)
+lab.row <- cbind(lab.row.bac, lab.row.arc) # Does this make sense to combine?
+lab.row.euk <- get.names(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+## Obtain phyla names and combine between archaea and bacteria
+lab.row.bac.phyla <- get.names.phyla(unique.select,'bacteria', map.bac, taxa.bac)
+lab.row.arc.phyla <- get.names.phyla(unique.select,'archaea', map.arc, taxa.arc)
+lab.row.phyla <- cbind(lab.row.bac.phyla, lab.row.arc.phyla)
+lab.row.euk.phyla <- get.names.phyla(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+## Obtain order names and combine between archaea and bacteria
+lab.row.bac.order <- get.names.order(unique.select,'bacteria', map.bac, taxa.bac)
+lab.row.arc.order <- get.names.order(unique.select,'archaea', map.arc, taxa.arc)
+lab.row.order <- cbind(lab.row.bac.order, lab.row.arc.order)
+lab.row.euk.order <- get.names.order(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+## Obtain genus names and combine between archaea and bacteria
+lab.row.euk.genus <- get.names.genus(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+# Obtain 'class' and 'division' and 'species' names for eukaryotes only
+lab.row.euk.class <- get.names.class(unique.euk.select,'eukarya', map.euk, taxa.euk)
+lab.row.euk.division <- get.names.division(unique.euk.select,'eukarya', map.euk, taxa.euk)
+lab.row.euk.species <- get.names.species(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+## Define function to obtain a specific taxonomy
+get.asvindex.by.taxa <- function(map, taxa, target_taxa, rank){
+  target.edges <- row.names(taxa)[which(taxa[,rank] == target_taxa)]
+  target.asvs <- row.names(map)[which(map$global_edge_num %in% target.edges)]
+  selected <- which(colnames(unique.select) %in% target.asvs)
+  return(selected)
+}
+  # Currently not used.
+```
+
+```{r identify phytoplankton groups in 18S data}
+
+taxa.euk$phyto <- NA ## Initialize all points as NA
+
+## Phytoplankton are:
+  ## Chlorophytes, Rhodophytes, Haptophytes, Cryptophytes, Diatoms, some Dinoflagellates
+taxa.euk$phyto[taxa.euk$division=="Chlorophyta"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Rhodophyta"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Haptophyta"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Cryptophyta" & taxa.euk$order=="Cryptomonadales"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Ochrophyta"] <- "phytoplankton"
+## The following orders of dinoflagellates are mixotrophs
+## (others not listed below are mostly parasitic, or obligate heterotrophs)
+taxa.euk$phyto[taxa.euk$division=="Dinoflagellata" & taxa.euk$order=="Gymnodiniales"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Dinoflagellata" & taxa.euk$order=="Gonyaulacales"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Dinoflagellata" & taxa.euk$order=="Dinophysiales"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Dinoflagellata" & taxa.euk$order=="Peridiniales"] <- "phytoplankton"
+taxa.euk$phyto[taxa.euk$division=="Dinoflagellata" & taxa.euk$order=="Prorocentrales"] <- "phytoplankton"
+
+## Adding certain groups from Suessiales as phytoplankton
+taxa.euk$phyto[which(taxa.euk$genus=="Pelagodinium")] <- "phytoplankton"
+taxa.euk$phyto[which(taxa.euk$genus=="Biecheleria")] <- "phytoplankton"
+
+
+## Removing certain Gymnodiniales and Peridiniales dinoflagellates from phytoplankton classification
+## These groups are known to be heterotrophic
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodiniellum_shiwhaense")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodinium_dominans")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Chytriodinium_sp.")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Proterythropsis_sp.")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Warnowia_sp.")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodinium_spirale")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodinium_dominans")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodinium_rubrum")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Amphidinium_longum")] <- NA
+taxa.euk$phyto[which(taxa.euk$taxon=="Gyrodinium_helveticum")] <- NA
+taxa.euk$phyto[which(taxa.euk$genus=="Protoperidinium")] <- NA
+taxa.euk$phyto[which(taxa.euk$family=="Diplopsalidaceae")] <- NA
+
+## Set up function for extracting "phyto" classification from taxa table
+get.phyto <- function(unique.data, domain, map, taxa){
+  unique.lab.Row <- map[colnames(unique.data), 'global_edge_num']
+  unique.lab.Row <- taxa[unique.lab.Row, 'phyto']
+  # unique.lab.Row[unique.lab.Row == ""] <- domain # Replace blank with domain name.
+  # unique.lab.Row[is.na(unique.lab.Row)] <- domain # Replace NA with domain name.
+  return(unique.lab.Row)
+}
+
+lab.row.euk.phyto <- get.phyto(unique.euk.select,'eukarya', map.euk, taxa.euk)
+
+```
+
+## Load metadata
+```{r load metadata}
+## Load metadata file
+metadata <- read.csv('SMODE_IOP1_IOP2_16S_metadata_wCTDvars.csv')
+head(metadata)
+
+## Drop any samples according to libraries that were dropped in '0_read_data.R'
+metadata.select <- metadata[which(metadata$ID %in% row.names(unique.select)),]
+head(metadata.select)
+
+## Just make sure sample IDs are aligned with relative abundance data.
+identical(metadata.select$ID,row.names(unique.select))
+```
+
+
+## Identify and subset eddy samples
+```{r eddy metadata subset}
+## Add missing depth information for some samples
+  ## Let's consider flow through bottle samples came from depth = 5m
+metadata.select[which(metadata.select$niskin==0), "depth"] <- 5
+
+  # Note: Some rows of flow-through data already had 5m listed for depth.
+
+## Add depth levels to metadata
+metadata.select <- metadata.select %>%
+  mutate(depth.level = case_when(depth <=10 ~"0-10 m",
+                                 depth>10 & depth <=50 ~"10-50 m",
+                                 depth>50 & depth<=100 ~ "50-100 m",
+                                 depth>100 & depth<=200 ~ "100-200 m",
+                                 depth>200 & depth<=300 ~ "200-300 m",
+                                 depth>300 ~ ">300 m"
+                                 ))
+
+## Add column for whether during eddy sampling or not.
+metadata.select <- metadata.select %>%
+  mutate(eddy.sampling = case_when( year==2023 & day>=19 & day<=24 ~ "near eddy",
+                                    year==2023 & (day<19 | day>24) ~ "outside eddy"))
+
+metadata.select <- metadata.select %>%
+  mutate(cruise = case_when(year==2023 ~ "IOP2",
+                            year==2022 ~ "IOP1"))
+
+## Rename "ID" variable/column to "sample_id" - this will allow for consistency later.
+names(metadata.select)[names(metadata.select)=="ID"] <- "sample_id"
+
+## Select only data from IOP-1 (2022) and IOP-2 (2023)
+
+metadata.2022 <- metadata.select[which(metadata.select$year==2022), ]
+metadata.2023 <- metadata.select[which(metadata.select$year==2023), ]
+
+## Select only data from cross-eddy sampling
+  ## Cruise: S-MODE IOP-2
+  ## Date of transects: 19 to 22 April 2023 (maybe 24 April)
+  
+# day_select = 20
+
+# For flow through samples only on certain days:
+# metadata.eddy <- metadata.select[which(metadata.select$year==2023 & metadata.select$day==day_select & metadata.select$niskin==0), ]
+
+# Otherwise, for all samples (flow through + CTD rosette) on ALL CROSS-EDDY TRANSECT DAYS:
+metadata.eddy <- metadata.select[which(metadata.select$year==2023 & metadata.select$day>=19 & metadata.select$day<=22), ]
+
+metadata.eddy
+
+```
+
+```{r IOP-1 ASVs abundance subset}
+## Subset the ASV abundance data 
+
+## IOP-1 Subset
+unique.select.2022 <- unique.select[which(row.names(unique.select) %in% metadata.2022$sample_id), ]
+# unique.select.ra.2022 <- unique.select.ra[which(row.names(unique.select.ra) %in% metadata.2022$sample_id), ]
+# unique.select.ra.helling.2022 <- unique.select.ra.helling[which(row.names(unique.select.ra) %in% metadata.2022$sample_id), ]
+# unique.select.2022[],1:2] ## to check
+# unique.select.ra.2022[,1:2] ## to check
+
+## Re-do calculations
+# abundthresh <- 10 
+unique.select.2022 <- unique.select.2022[,colSums(unique.select.2022)>abundthresh]
+unique.select.ra.2022 <- decostand(unique.select.2022,method="total",MARGIN=1, na.rm=TRUE)
+#rowSums(unique.select.ra.2023) ## sanity check
+unique.select.ra.helling.2022 <- decostand(unique.select.2022,method="hellinger")
+
+```
+
+```{r IOP-2 and eddy 16S ASVs abundance subset}
+## Subset the ASV abundance data 
+
+## IOP-2 Subset
+unique.select.2023 <- unique.select[which(row.names(unique.select) %in% metadata.2023$sample_id), ]
+# unique.select.ra.2023 <- unique.select.ra[which(row.names(unique.select.ra) %in% metadata.2023$sample_id), ]
+# unique.select.ra.helling.2023 <- unique.select.ra.helling[which(row.names(unique.select.ra) %in% metadata.2023$sample_id), ]
+# unique.select.2023[,1:2] ## to check
+# unique.select.ra.2023[,1:2] ## to check
+
+## Re-do calculations
+unique.select.2023 <- unique.select.2023[,colSums(unique.select.2023)>abundthresh]
+unique.select.ra.2023 <- decostand(unique.select.2023,method="total",MARGIN=1, na.rm=TRUE)
+#rowSums(unique.select.ra.2023) ## sanity check
+unique.select.ra.helling.2023 <- decostand(unique.select.2023,method="hellinger")
+
+## Eddy subset
+# unique.select.eddy <- unique.select[which(row.names(unique.select) %in% metadata.eddy$sample_id), ]
+# unique.select.ra.eddy <- unique.select.ra[which(row.names(unique.select.ra) %in% metadata.eddy$sample_id), ]
+# unique.select.ra.helling.eddy <- unique.select.ra.helling[which(row.names(unique.select.ra) %in% metadata.eddy$sample_id), ]
+# unique.select.eddy[,1:2] ## to check
+# unique.select.ra.eddy[,1:2] ## to check
+unique.select.eddy <- unique.select.2023[which(row.names(unique.select.2023) %in% metadata.eddy$sample_id), ]
+unique.select.ra.eddy <- unique.select.ra.2023[which(row.names(unique.select.ra.2023) %in% metadata.eddy$sample_id), ]
+unique.select.ra.helling.eddy <- unique.select.ra.helling.2023[which(row.names(unique.select.ra.2023) %in% metadata.eddy$sample_id), ]
+unique.select.eddy[,1:2] ## to check
+unique.select.ra.eddy[,1:2] ## to check
+
+## 
+```
+
+
+```{r row name check}
+## Once again, check to ensure sample IDS are aligned
+
+identical(metadata.2022$sample_id,row.names(unique.select.ra.2022))
+identical(metadata.2022$sample_id,row.names(unique.select.ra.helling.2022))
+identical(metadata.2022$sample_id,row.names(unique.select.2022))
+
+identical(metadata.2023$sample_id,row.names(unique.select.ra.2023))
+identical(metadata.2023$sample_id,row.names(unique.select.ra.helling.2023))
+
+identical(metadata.2023$sample_id,row.names(unique.select.2023))
+identical(metadata.eddy$sample_id,row.names(unique.select.ra.eddy))
+identical(metadata.eddy$sample_id,row.names(unique.select.ra.helling.eddy))
+identical(metadata.eddy$sample_id,row.names(unique.select.eddy))
+```
+
+
+```{r 18S metadata processing}
+##Load metadata for 18S from 16S file; change the sample names (this is a workaround for now)
+metadata.18S <- read.csv('SMODE_IOP1_IOP2_16S_metadata_wCTDvars.csv')
+
+sample.labels <- metadata.18S$ID
+metadata.18S$ID <- sub('16S','18S',sample.labels)
+metadata.18S.select <- metadata.18S[which(metadata.18S$ID %in% row.names(unique.euk.select)),]
+identical(metadata.18S.select$ID,row.names(unique.euk.select))
+
+## Do all the processing we did before for the 16S data, but now for 18S metadata.
+metadata.18S.select <- metadata.18S.select %>%
+  mutate(depth.level = case_when(depth <=10 ~"0-10 m",
+                                 depth>10 & depth <=50 ~"10-50 m",
+                                 depth>50 & depth<=100 ~ "50-100 m",
+                                 depth>100 & depth<=200 ~ "100-200 m",
+                                 depth>200 & depth<=300 ~ "200-300 m",
+                                 depth>300 ~ ">300 m"
+                                 ))
+metadata.18S.select <- metadata.18S.select %>%
+  mutate(eddy.sampling = case_when( year==2023 & day>=19 & day<=24 ~ "near eddy",
+                                    year==2023 & (day<19 | day>24) ~ "outside eddy"))
+
+metadata.18S.select <- metadata.18S.select %>%
+  mutate(cruise = case_when(year==2023 ~ "IOP2",
+                            year==2022 ~ "IOP1"))
+
+names(metadata.18S.select)[names(metadata.18S.select)=="ID"] <- "sample_id"
+
+#identical(metadata.18S.select$sample_id,row.names(unique.euk.select)) ## sanity check
+
+## Subsets for 2022, 2023 and eddy
+metadata.18S.2022 <- metadata.18S.select[which(metadata.18S.select$year==2022), ]
+metadata.18S.2023 <- metadata.18S.select[which(metadata.18S.select$year==2023), ]
+metadata.18S.eddy <- metadata.18S.select[which(metadata.18S.select$year==2023 & metadata.18S.select$day>=19 & metadata.18S.select$day<=22), ]
+
+## Subset the 18S abundance data 
+
+## IOP-1 Subset
+unique.euk.select.2022 <- unique.euk.select[which(row.names(unique.euk.select) %in% metadata.18S.2022$sample_id), ]
+## Re-do calculations
+unique.euk.select.2022 <- unique.euk.select.2022[,colSums(unique.euk.select.2022)>abundthresh]
+unique.euk.select.ra.2022 <- decostand(unique.euk.select.2022 ,method="total",MARGIN=1, na.rm=TRUE)
+#rowSums(unique.euk,select.ra.2022) ## sanity check
+unique.euk.select.ra.helling.2022 <- decostand(unique.euk.select.2022, method="hellinger")
+
+
+## IOP-2 Subset
+unique.euk.select.2023 <- unique.euk.select[which(row.names(unique.euk.select) %in% metadata.18S.2023$sample_id), ]
+# unique.euk.select.ra.2023 <- unique.euk.select.ra[which(row.names(unique.euk.select.ra) %in% metadata.18S.2023$sample_id), ]
+# unique.euk.select.ra.helling.2023 <- unique.euk.select.ra.helling[which(row.names(unique.euk.select.ra.helling) %in% metadata.18S.2023$sample_id), ]
+# unique.euk.select.2023[,1:2] ## to check
+# unique.euk.select.ra.2023[,1:2] ## to check
+
+## Re-do calculations
+unique.euk.select.2023 <- unique.euk.select.2023[,colSums(unique.euk.select.2023)>abundthresh]
+unique.euk.select.ra.2023 <- decostand(unique.euk.select.2023 ,method="total",MARGIN=1, na.rm=TRUE)
+#rowSums(unique.euk,select.ra.2023) ## sanity check
+unique.euk.select.ra.helling.2023 <- decostand(unique.euk.select.2023, method="hellinger")
+
+## Eddy subset
+# unique.euk.select.eddy <- unique.euk.select[which(row.names(unique.euk.select) %in% metadata.18S.eddy$sample_id), ]
+# unique.euk.select.ra.eddy <- unique.euk.select.ra[which(row.names(unique.euk.select.ra) %in% metadata.18S.eddy$sample_id), ]
+# unique.euk.select.ra.helling.eddy <- unique.euk.select.ra.helling[which(row.names(unique.euk.select.ra.helling) %in% metadata.18S.eddy$sample_id), ]
+# unique.euk.select.eddy[,1:2] ## to check
+# unique.euk.select.ra.eddy[,1:2] ## to check
+unique.euk.select.eddy <- unique.euk.select.2023[which(row.names(unique.euk.select.2023) %in% metadata.18S.eddy$sample_id), ]
+unique.euk.select.ra.eddy <- unique.euk.select.ra.2023[which(row.names(unique.euk.select.ra.2023) %in% metadata.18S.eddy$sample_id), ]
+unique.euk.select.ra.helling.eddy <- unique.euk.select.ra.helling.2023[which(row.names(unique.euk.select.ra.helling.2023) %in% metadata.18S.eddy$sample_id), ]
+
+## Check to ensure sample IDS are aligned
+identical(metadata.18S.2022$sample_id,row.names(unique.euk.select.ra.2022))
+identical(metadata.18S.2022$sample_id,row.names(unique.euk.select.ra.helling.2022))
+identical(metadata.18S.2022$sample_id,row.names(unique.euk.select.2022))
+
+identical(metadata.18S.2023$sample_id,row.names(unique.euk.select.ra.2023))
+identical(metadata.18S.2023$sample_id,row.names(unique.euk.select.ra.helling.2023))
+identical(metadata.18S.2023$sample_id,row.names(unique.euk.select.2023))
+
+identical(metadata.18S.eddy$sample_id,row.names(unique.euk.select.ra.eddy))
+identical(metadata.18S.eddy$sample_id,row.names(unique.euk.select.ra.helling.eddy))
+identical(metadata.18S.eddy$sample_id,row.names(unique.euk.select.eddy))
+```
+```{r Obtain taxa names for 2022 subset only}
+## Obtain taxa names and combine between archaea and bacteria - 2023 subset
+lab.row.bac.2022 <- get.names(unique.select.2022,'bacteria', map.bac, taxa.bac) # Length of lab.row.bac = length of unique.select (# of ASVs)
+lab.row.arc.2022 <- get.names(unique.select.2022,'archaea', map.arc, taxa.arc)
+lab.row.2022 <- cbind(lab.row.bac.2022, lab.row.arc.2022) # Does this make sense to combine?
+lab.row.euk.2022 <- get.names(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+
+## Obtain phyla names and combine between archaea and bacteria - 2022 subset
+lab.row.bac.phyla.2022 <- get.names.phyla(unique.select.2022,'bacteria', map.bac, taxa.bac)
+lab.row.arc.phyla.2022 <- get.names.phyla(unique.select.2022,'archaea', map.arc, taxa.arc)
+lab.row.phyla.2022 <- cbind(lab.row.bac.phyla.2022, lab.row.arc.phyla.2022)
+lab.row.euk.phyla.2022 <- get.names.phyla(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+
+## Obtain order names and combine between archaea and bacteria - 2022 subset
+lab.row.bac.order.2022 <- get.names.order(unique.select.2022,'bacteria', map.bac, taxa.bac)
+lab.row.arc.order.2022 <- get.names.order(unique.select.2022,'archaea', map.arc, taxa.arc)
+lab.row.order.2022 <- cbind(lab.row.bac.order.2022, lab.row.arc.order.2022)
+lab.row.euk.order.2022 <- get.names.order(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+
+## Obtain 'class' and 'division' and 'species' names for eukaryotes only - 2022 subset
+lab.row.euk.class.2022 <- get.names.class(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+lab.row.euk.division.2022 <- get.names.division(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+lab.row.euk.species.2022 <- get.names.species(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+lab.row.euk.genus.2022 <- get.names.genus(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+
+## Obtain phytoplankton designation - 2022 subset
+lab.row.euk.phyto.2022 <- get.phyto(unique.euk.select.2022,'eukarya', map.euk, taxa.euk)
+
+```
+
+```{r Obtain taxa names for 2023 subset only}
+## Obtain taxa names and combine between archaea and bacteria - 2023 subset
+lab.row.bac.2023 <- get.names(unique.select.2023,'bacteria', map.bac, taxa.bac) # Length of lab.row.bac = length of unique.select (# of ASVs)
+lab.row.arc.2023 <- get.names(unique.select.2023,'archaea', map.arc, taxa.arc)
+lab.row.2023 <- cbind(lab.row.bac.2023, lab.row.arc.2023) # Does this make sense to combine?
+lab.row.euk.2023 <- get.names(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+
+## Obtain phyla names and combine between archaea and bacteria - 2023 subset
+lab.row.bac.phyla.2023 <- get.names.phyla(unique.select.2023,'bacteria', map.bac, taxa.bac)
+lab.row.arc.phyla.2023 <- get.names.phyla(unique.select.2023,'archaea', map.arc, taxa.arc)
+lab.row.phyla.2023 <- cbind(lab.row.bac.phyla.2023, lab.row.arc.phyla.2023)
+lab.row.euk.phyla.2023 <- get.names.phyla(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+
+## Obtain order names and combine between archaea and bacteria - 2023 subset
+lab.row.bac.order.2023 <- get.names.order(unique.select.2023,'bacteria', map.bac, taxa.bac)
+lab.row.arc.order.2023 <- get.names.order(unique.select.2023,'archaea', map.arc, taxa.arc)
+lab.row.order.2023 <- cbind(lab.row.bac.order.2023, lab.row.arc.order.2023)
+lab.row.euk.order.2023 <- get.names.order(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+
+## Obtain 'class' and 'division' and 'species' names for eukaryotes only - 2023 subset
+lab.row.euk.class.2023 <- get.names.class(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+lab.row.euk.division.2023 <- get.names.division(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+lab.row.euk.species.2023 <- get.names.species(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+lab.row.euk.genus.2023 <- get.names.genus(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+
+## Obtain phytoplankton designation - 2023 subset
+lab.row.euk.phyto.2023 <- get.phyto(unique.euk.select.2023,'eukarya', map.euk, taxa.euk)
+
+```
+
+
+```{r Save RData}
+
+# save.image("SMODE-IOP1-IOP2-16S-18S-processed-with-CTD-metadata.Rdata") # save global env to Rdata file
+
+```
+
+```{r Surface sample subsets for 16S data - both cruises}
+
+## Subset surface samples for IOP-1 (identify subset indices, and subset metadata)
+surface.only.2022 <- which(metadata.2022$depth<=5 | metadata.2022$niskin==0)
+identical(metadata.2022$sample_id,rownames(unique.select.ra.2022)) #sanity check before subsetting
+metadata.2022.surf <- metadata.2022[surface.only.2022,] ##subset metadata, only surface samples
+
+unique.select.2022.surf <- unique.select.2022[surface.only.2022,] # subset the data
+unique.select.ra.2022.surf <- unique.select.ra.2022[surface.only.2022,] # subset the relative abundance data
+unique.select.ra.helling.2022.surf <- unique.select.ra.helling.2022[surface.only.2022,]
+identical(rownames(unique.select.ra.2022.surf),metadata.2022$sample_id[surface.only.2022]) #sanity check after subsetting
+identical(rownames(unique.select.ra.helling.2022.surf),metadata.2022$sample_id[surface.only.2022]) #sanity check
+
+################################################################################
+
+## Subset surface samples for IOP-2 (identify subset indices, and subset metadata)
+surface.only.2023 <- which(metadata.2023$depth<=5 | metadata.2023$niskin==0)
+identical(metadata.2023$sample_id,rownames(unique.select.ra.2023)) #sanity check before subsetting
+metadata.2023.surf <- metadata.2023[surface.only.2023,] ##subset metadata, only surface samples
+
+unique.select.2023.surf <- unique.select.2023[surface.only.2023,] # subset the data
+unique.select.ra.2023.surf <- unique.select.ra.2023[surface.only.2023,] # subset the relative abundance data
+unique.select.ra.helling.2023.surf <- unique.select.ra.helling.2023[surface.only.2023,]
+identical(rownames(unique.select.ra.2023.surf),metadata.2023$sample_id[surface.only.2023]) #sanity check after subsetting
+identical(rownames(unique.select.ra.helling.2023.surf),metadata.2023$sample_id[surface.only.2023]) #sanity check
+
+```
+
+```{r Surface sample subsets for 18S data}
+
+############################### IOP-1 #########################################
+
+## Subset surface samples (identify subset indices, and subset metadata)
+surface.only.euk.2022 <- which(metadata.18S.2022$depth<=5 | metadata.18S.2022$niskin==0)
+metadata.18S.2022.surf <- metadata.18S.2022[surface.only.euk.2022,]
+
+## Generate relevant eukaryote subsets
+unique.euk.select.ra.2022.surf <- unique.euk.select.ra.2022[surface.only.euk.2022,]
+unique.euk.select.ra.helling.2022.surf <- unique.euk.select.ra.helling.2022[surface.only.euk.2022,]
+identical(rownames(unique.euk.select.ra.2022.surf),metadata.18S.2022$sample_id[surface.only.euk.2022]) #sanity check
+identical(rownames(unique.euk.select.ra.helling.2022.surf),metadata.18S.2022$sample_id[surface.only.euk.2022]) #sanity check
+
+## Generate relevant eukaryote phytoplankton subsets
+phyto.select.2022 <- which(lab.row.euk.phyto.2022=="phytoplankton")
+unique.euk.select.2022.phyto <- unique.euk.select.2022[,phyto.select.2022]
+unique.euk.select.2022.surf <- unique.euk.select.2022[surface.only.euk.2022,]
+unique.euk.select.2022.phyto.surf <- unique.euk.select.2022.surf[,phyto.select.2022]
+
+## Remove empty rows
+unique.euk.select.2022.phyto <- unique.euk.select.2022.phyto[which(rowSums(unique.euk.select.2022.phyto)!=0),] 
+unique.euk.select.2022.phyto.surf <- unique.euk.select.2022.phyto.surf[which(rowSums(unique.euk.select.2022.phyto.surf)!=0),] 
+
+## Compute relative abundance and Hellinger abundance
+unique.euk.select.2022.phyto.ra <- decostand(unique.euk.select.2022.phyto,method="total",MARGIN=1, na.rm=TRUE)
+unique.euk.select.2022.phyto.ra.helling <- decostand(unique.euk.select.2022.phyto,method="hellinger")
+rowSums(unique.euk.select.2022.phyto.ra) #sanity check
+
+unique.euk.select.2022.phyto.ra.surf <- decostand(unique.euk.select.2022.phyto.surf,method="total",MARGIN=1, na.rm=TRUE)
+unique.euk.select.2022.phyto.ra.helling.surf <- decostand(unique.euk.select.2022.phyto.surf,method="hellinger")
+rowSums(unique.euk.select.2022.phyto.ra.surf) #sanity check
+
+############################### IOP-2 #########################################
+
+## Subset surface samples (identify subset indices, and subset metadata)
+surface.only.euk.2023 <- which(metadata.18S.2023$depth<=5 | metadata.18S.2023$niskin==0)
+metadata.18S.2023.surf <- metadata.18S.2023[surface.only.euk.2023,]
+
+## Generate relevant eukaryote subsets
+unique.euk.select.ra.2023.surf <- unique.euk.select.ra.2023[surface.only.euk.2023,]
+unique.euk.select.ra.helling.2023.surf <- unique.euk.select.ra.helling.2023[surface.only.euk.2023,]
+identical(rownames(unique.euk.select.ra.2023.surf),metadata.18S.2023$sample_id[surface.only.euk.2023]) #sanity check
+identical(rownames(unique.euk.select.ra.helling.2023.surf),metadata.18S.2023$sample_id[surface.only.euk.2023]) #sanity check
+
+## Generate relevant eukaryote phytoplankton subsets
+phyto.select.2023 <- which(lab.row.euk.phyto.2023=="phytoplankton")
+unique.euk.select.2023.phyto <- unique.euk.select.2023[,phyto.select.2023]
+unique.euk.select.2023.surf <- unique.euk.select.2023[surface.only.euk.2023,]
+unique.euk.select.2023.phyto.surf <- unique.euk.select.2023.surf[,phyto.select.2023]
+
+## Remove empty rows
+unique.euk.select.2023.phyto <- unique.euk.select.2023.phyto[which(rowSums(unique.euk.select.2023.phyto)!=0),] 
+unique.euk.select.2023.phyto.surf <- unique.euk.select.2023.phyto.surf[which(rowSums(unique.euk.select.2023.phyto.surf)!=0),] 
+
+## Compute relative abundance and Hellinger abundance
+unique.euk.select.2023.phyto.ra <- decostand(unique.euk.select.2023.phyto,method="total",MARGIN=1, na.rm=TRUE)
+unique.euk.select.2023.phyto.ra.helling <- decostand(unique.euk.select.2023.phyto,method="hellinger")
+rowSums(unique.euk.select.2023.phyto.ra) #sanity check
+
+unique.euk.select.2023.phyto.ra.surf <- decostand(unique.euk.select.2023.phyto.surf,method="total",MARGIN=1, na.rm=TRUE)
+unique.euk.select.2023.phyto.ra.helling.surf <- decostand(unique.euk.select.2023.phyto.surf,method="hellinger")
+rowSums(unique.euk.select.2023.phyto.ra.surf) #sanity check
+
+```
+
+```{r Save RData}
+
+# save(list=c('metadata.2023.surf',
+#             'metadata.18S.2023.surf',
+#             'unique.select.2023.surf',
+#             'unique.select.ra.2023.surf',
+#             'unique.select.ra.helling.2023.surf',
+#             'unique.euk.select.2023.surf',
+#             'unique.euk.select.ra.2023.surf',
+#             'unique.euk.select.ra.helling.2023.surf',
+#             'unique.euk.select.2023.phyto.surf',
+#             'unique.euk.select.2023.phyto.ra.surf',
+#             'unique.euk.select.2023.phyto.ra.helling.surf'),
+#             file=paste0(data_dir,'SMODE-IOP2-16S-18S-surface-ASVdata-metadata.Rdata'))
+
+
+# save(list=c('metadata.2022.surf',
+#             'metadata.18S.2022.surf',
+#             'unique.select.2022.surf',
+#             'unique.select.ra.2022.surf',
+#             'unique.select.ra.helling.2022.surf',
+#             'unique.euk.select.2022.surf',
+#             'unique.euk.select.ra.2022.surf',
+#             'unique.euk.select.ra.helling.2022.surf',
+#             'unique.euk.select.2022.phyto.surf',
+#             'unique.euk.select.2022.phyto.ra.surf',
+#             'unique.euk.select.2022.phyto.ra.helling.surf'),
+#             file=paste0(data_dir,'SMODE-IOP1-16S-18S-surface-ASVdata-metadata.Rdata'))
+
+
+```
+
+

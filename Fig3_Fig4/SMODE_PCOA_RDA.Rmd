@@ -1,0 +1,1049 @@
+---
+title: "SMODE_PCOA_RDA"
+author: "Shailja Gangrade"
+date: "2026-08-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+> **File description**
+> Analysis code (PCOA/RDA) for data used in Gangrade et al. (2026), GRL.
+
+## Load libraries
+```{r}
+suppressPackageStartupMessages({ # load packages quietly
+  library(gplots)
+  library(ggplot2)
+  library(tidyverse)
+  library(tidyr)
+  library(plyr)
+  library(dplyr)
+  library(viridis)
+  library(reshape)
+  library(reshape2)
+  library(pals)
+  library(vegan)
+  library(decontam)
+  library(oce)
+  library(cmocean)
+  library(khroma)
+  library(svglite)
+  library(cowplot)
+  library(ggvegan)
+})
+```
+
+## Load in data
+```{r load ASVs data}
+# data_dir <- '~/data/'
+# fig_dir <- '~/figures/'
+
+# Load Rdata
+load("SMODE-IOP1-IOP2-16S-18S-processed-with-CTD-metadata.Rdata") # used for GRL manuscript
+load("SMODE-IOP2-16S-18S-surface-ASVdata-metadata.Rdata") # load together with above Rdata, used for GRL manuscript
+
+```
+
+```{r Prepare your 18S data}
+
+
+# ## Subset surface samples
+# surface.only.euk <- which(metadata.18S.2023$depth<=5 | metadata.18S.2023$niskin==0)
+# unique.euk.select.ra.2023.surf <- unique.euk.select.ra.2023[surface.only.euk,]
+# unique.euk.select.ra.helling.2023.surf <- unique.euk.select.ra.helling.2023[surface.only.euk,]
+# identical(rownames(unique.euk.select.ra.2023.surf),metadata.18S.2023$sample_id[surface.only.euk]) #sanity check
+# identical(rownames(unique.euk.select.ra.helling.2023.surf),metadata.18S.2023$sample_id[surface.only.euk]) #sanity check
+# 
+
+# Rows are samples/sites, columns are species
+# Values should be counts or relative abundances
+
+species.18S.df <-  unique.euk.select.2023.phyto.ra.helling.surf # From IOP-2 18S surface
+## IMPORTANT: unique.euk.select.2023.phyto.ra.helling.surf CONTAINS:
+  ## PHYTOPLANKTON only
+  ## SURFACE samples only (niskin == 0 or depth == 5)
+  ## Hellinger transformed abundance values (relative abundances are considered relative to phyto only)
+
+# Rows are samples/sites (must match species_matrix rows), columns are environmental variables
+# Here, I am choosing only relevant variables from metadata
+environmental.data.18S <- metadata.18S.2023.surf[, c("temp","sal","sigma_T","oxygen","PAR",
+                                          "chl","chl_fl","POC")]
+rownames(environmental.data.18S) <-  metadata.18S.2023.surf$sample_id
+
+# metadata.18S.2023.surf <- metadata.18S.2023 %>%
+#   filter(depth <= 5 | niskin==0 & UTCDatetime!="NaT")
+# identical(metadata.18S.2023.surf$sample_id,rownames(unique.euk.select.2023.phyto.ra.helling.surf))
+
+# Drop (filter) rows (samples) that have any NAs
+
+environmental.18S.df <- data.frame(environmental.data.18S)
+environmental.18S.df.filtered <- environmental.18S.df %>%
+  filter(rownames(environmental.18S.df) %in% rownames(species.18S.df))  %>%
+  drop_na() # Removes rows with NA in col1 or col2
+
+# Filter the sequencing data accordingly
+species.18S.df.filtered <- species.18S.df %>%
+  filter(rownames(species.18S.df) %in% rownames(environmental.18S.df.filtered)) 
+
+identical(rownames(species.18S.df.filtered),rownames(environmental.18S.df.filtered))
+
+# Scale environmental variables
+environmental.matrix.18S.filtered.scaled <- scale(environmental.18S.df.filtered) # there are different options for centering, see ?scale
+environmental.df.18S.filtered.scaled <- data.frame(environmental.matrix.18S.filtered.scaled)
+
+
+# Ensure row names (sample/site identifiers) are identical and in the same order
+# This is crucial for matching species data with environmental data
+if (!identical(rownames(species.18S.df.filtered), rownames(environmental.df.18S.filtered.scaled))) {
+  stop("Row names of species and environmental matrices do not match or are not in the same order.")
+}
+
+```
+
+```{r Prepare your 16S data}
+
+# Rows are samples/sites, columns are species
+# Values should be counts or relative abundances
+species.df <- unique.select.ra.helling.2023.surf #IOP-2 16S surface
+
+# Rows are samples/sites (must match species_matrix rows), columns are environmental variables
+# Here, I am choosing only relevant variables from metadata
+
+# metadata.2023.surf <- metadata.2023 %>%
+#   filter(depth <= 5 | niskin==0) 
+# identical(metadata.2023.surf$sample_id,rownames(unique.select.ra.helling.2023.surf))
+
+
+# environmental.data <- metadata.2023.surf[, c("temp","sal","sigma_T","oxygen","PAR",
+#                                           "chl","chl_fl","POC","chl_btl","phaeo",
+#                                           "POC_btl","PO4","NO3")]
+environmental.data <- metadata.2023.surf[, c("temp","sal","sigma_T","oxygen","PAR",
+                                          "chl","chl_fl","POC")]
+rownames(environmental.data) <-  metadata.2023.surf$sample_id
+
+
+# Drop (filter) rows (samples) that have any NAs
+
+environmental.df <- data.frame(environmental.data)
+environmental.df.filtered <- environmental.df %>%
+  drop_na() # Removes rows with NA in col1 or col2
+
+# Filter the sequencing data accordingly
+species.df.filtered <- species.df %>%
+  filter(rownames(species.df) %in% rownames(environmental.df.filtered)) 
+
+identical(rownames(species.df.filtered),rownames(environmental.df.filtered))
+
+# Scale environmental variables
+environmental.matrix.filtered.scaled <- scale(environmental.df.filtered) # there are different options for centering, see ?scale
+environmental.df.filtered.scaled <- data.frame(environmental.matrix.filtered.scaled)
+
+
+# Ensure row names (sample/site identifiers) are identical and in the same order
+# This is crucial for matching species data with environmental data
+if (!identical(rownames(species.df.filtered), rownames(environmental.df.filtered.scaled))) {
+  stop("Row names of species and environmental matrices do not match or are not in the same order.")
+}
+
+```
+
+
+```{r PCOA}
+
+## Calculate Bray-Curtis distances:
+  # The input data frame contains data that are:
+    # Hellinger transformed abudances
+    # Surface only samples  (depth <=5  | niskin==0)
+    # Have non-NaN values for the environmental variables defined in the above section
+distances.env.filtered <- vegdist(species.df.filtered, method = "bray")
+
+## Perform PCOA using cmdscale
+pcoa.16S.surf.env.filtered <- cmdscale(distances.env.filtered , eig = TRUE, add=TRUE) # eig = TRUE returns eigenvalues, add=TRUE scales data so we do not get negative eigenvalues
+
+## Calcualte percent explained
+percent_explained <- (pcoa.16S.surf.env.filtered$eig / sum(pcoa.16S.surf.env.filtered$eig)) * 100
+pcoa1_percent <- round(percent_explained[1], 2)
+pcoa2_percent <- round(percent_explained[2], 2)
+## Plot PCOA results - basic
+ordiplot(pcoa.16S.surf.env.filtered, display = 'sites')
+
+positions.16S.surf.env.filtered <- pcoa.16S.surf.env.filtered$points
+colnames(positions.16S.surf.env.filtered) <- c("PCOA1","PCOA2")
+
+positions.16S.surf.env.filtered <- positions.16S.surf.env.filtered %>% 
+  as_tibble(rownames="sample_id")
+
+positions.16S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point()
+
+identical(rownames(environmental.df.filtered),positions.16S.surf.env.filtered$sample_id) # Check for match up
+
+```
+
+```{r PCOA for 18S Surface Phytoplankton}
+
+## Calculate Bray-Curtis distances:
+  # The input data frame contains data that are:
+    # Hellinger transformed abudances
+    # Surface only samples  (depth <=5  | niskin==0)
+    # Have non-NaN values for the environmental variables defined in the above section
+distances.18S.env.filtered <- vegdist(species.18S.df.filtered, method = "bray")
+
+## Perform PCOA using cmdscale
+pcoa.18S.surf.env.filtered <- cmdscale(distances.18S.env.filtered , eig = TRUE, add=TRUE) # eig = TRUE returns eigenvalues, add=TRUE scales data so we do not get negative eigenvalues
+
+## Calcualte percent explained
+percent_explained.18S <- (pcoa.18S.surf.env.filtered$eig / sum(pcoa.18S.surf.env.filtered$eig)) * 100
+pcoa1_percent.18S <- round(percent_explained.18S[1], 2)
+pcoa2_percent.18S <- round(percent_explained.18S[2], 2)
+## Plot PCOA results - basic
+ordiplot(pcoa.18S.surf.env.filtered, display = 'sites')
+
+positions.18S.surf.env.filtered <- pcoa.18S.surf.env.filtered$points
+colnames(positions.18S.surf.env.filtered) <- c("PCOA1","PCOA2")
+
+positions.18S.surf.env.filtered <- positions.18S.surf.env.filtered %>% 
+  as_tibble(rownames="sample_id")
+
+positions.18S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point()
+
+identical(rownames(environmental.18S.df.filtered),positions.18S.surf.env.filtered$sample_id) # Check for match up
+
+```
+
+```{r Add information about eddy location}
+## Add information about eddy location in environmental.df.filtered
+
+## Load eddy location data
+eddyclass.16S <- read_csv(paste0(data_dir,"SMODE_IOP2_16S_flowthru_eddy_sample_classifications.csv"))
+eddyclass.18S <- eddyclass.16S ## Swap '16S' for '18S' in sample labels
+sample.labels <- eddyclass.16S$ID
+eddyclass.18S$ID <- sub('16S','18S',sample.labels)
+
+## Add to metadata files
+metadata.2023.surf$Location <- NA
+metadata.2023.surf$Location[which(metadata.2023.surf$sample_id %in% eddyclass.16S$ID)] <- eddyclass.16S$type[which(eddyclass.16S$ID %in% metadata.2023.surf$sample_id)]
+
+metadata.18S.2023.surf$Location <- NA
+metadata.18S.2023.surf$Location[which(metadata.18S.2023.surf$sample_id %in% eddyclass.18S$ID)] <- eddyclass.18S$type[which(eddyclass.18S$ID %in% metadata.18S.2023.surf$sample_id)]
+
+## Filter the location data accordingly
+eddyclass.16S.filtered <- eddyclass.16S %>%
+  filter(eddyclass.16S$ID %in% rownames(environmental.df.filtered))
+
+eddyclass.18S.filtered <- eddyclass.18S %>%
+  filter(eddyclass.18S$ID %in% rownames(environmental.18S.df.filtered))
+
+## Check it matches
+identical(eddyclass.16S.filtered$ID,rownames(environmental.df.filtered))
+identical(eddyclass.18S.filtered$ID,rownames(environmental.18S.df.filtered))
+
+
+## Combine data frames
+environmental.df.filtered.eddyloc <- environmental.df.filtered %>%
+    mutate(location = eddyclass.16S.filtered$type)
+environmental.18S.df.filtered.eddyloc <- environmental.18S.df.filtered %>%
+    mutate(location = eddyclass.18S.filtered$type)
+
+##Subset for only eddy core samples
+environmental.df.filtered.eddycore <- environmental.df.filtered.eddyloc[environmental.df.filtered.eddyloc$location=="COR",]
+environmental.18S.df.filtered.eddycore <- environmental.18S.df.filtered.eddyloc[environmental.18S.df.filtered.eddyloc$location=="COR",]
+
+##Subset the PCOA results for eddy core samples only
+positions.16S.surf.env.filtered.eddycore <- positions.16S.surf.env.filtered %>%
+ filter(positions.16S.surf.env.filtered$sample_id %in% rownames(environmental.df.filtered.eddycore))  
+positions.18S.surf.env.filtered.eddycore <- positions.18S.surf.env.filtered %>%
+ filter(positions.18S.surf.env.filtered$sample_id %in% rownames(environmental.18S.df.filtered.eddycore))  
+
+## Sanity check
+identical(rownames(environmental.df.filtered.eddycore),positions.16S.surf.env.filtered.eddycore$sample_id)
+identical(rownames(environmental.18S.df.filtered.eddycore),positions.18S.surf.env.filtered.eddycore$sample_id)
+
+
+```
+
+
+```{r PCOA with eddy core}
+## Plots PCOA results - colored by environmental variables + highlighting EDDY CORE points.
+
+p1=positions.16S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.df.filtered$sal),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.16S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.df.filtered.eddycore$sal),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "haline", version = getOption('cmocean-version', '2.0'), breaks = seq(32.5,33.2,by=0.1)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent, "%)")) +
+  labs(fill = "Salinity")
+  # +
+  # ggtitle(" IOP-2 16S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_Salinity_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p2=positions.16S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.df.filtered$temp),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.16S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.df.filtered.eddycore$temp),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "thermal", version = getOption('cmocean-version', '2.0'), breaks = seq(11,13.5,by=0.5)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent, "%)")) +
+  labs(fill = "Temperature (\u00b0C)")
+  # +
+  # ggtitle(" IOP-2 16S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_Temperature_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p3=positions.16S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.df.filtered$chl),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.16S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.df.filtered.eddycore$chl),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "algae", version = getOption('cmocean-version', '2.0'), breaks = seq(0,8,by=2)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent, "%)")) +
+  labs(fill = expression("Chl-a (mg m"^-3*")"))
+  # +
+  # ggtitle(" IOP-2 16S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_Chl_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p4=positions.16S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.df.filtered$POC/environmental.df.filtered$chl),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.16S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.df.filtered.eddycore$POC/environmental.df.filtered.eddycore$chl),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "deep", version = getOption('cmocean-version', '2.0'), breaks = seq(0,50,by=5)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent, "%)")) +
+  labs(fill = expression("POC:Chl-a"))
+  # +
+  # ggtitle(" IOP-2 16S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_POC_Chl_ratio_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+summary_pcoa_plot_eddyloc <- plot_grid(p1, p2, p3, p4, ncol=2, align="v")
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_env_vars_eddycoresquares.png"),plot = summary_pcoa_plot_eddyloc, width = 10, height = 6, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_PCOA_env_vars_eddycoresquares.svg"),plot = summary_pcoa_plot_eddyloc, width = 10, height = 6, dpi=300)
+
+summary_pcoa_plot_eddyloc
+
+```
+
+```{r PCOA with eddy core - 18S Phytoplankton Surface}
+## Plots PCOA results - colored by environmental variables + highlighting EDDY CORE points.
+
+
+p1.18S <- positions.18S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.18S.df.filtered$sal),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.18S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.18S.df.filtered.eddycore$sal),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "haline", version = getOption('cmocean-version', '2.0'), breaks = seq(32.5,33.2,by=0.1)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent.18S, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent.18S, "%)")) +
+  labs(fill = "Salinity")
+  # +
+  # ggtitle(" IOP-2 18S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_Salinity_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p2.18S <- positions.18S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.18S.df.filtered$temp),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.18S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.18S.df.filtered.eddycore$temp),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "thermal", version = getOption('cmocean-version', '2.0'), breaks = seq(11,13.5,by=0.5)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent.18S, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent.18S, "%)")) +
+  labs(fill = "Temperature (\u00b0C)")
+  # +
+  # ggtitle(" IOP-2 18S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_Temperature_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p3.18S <- positions.18S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.18S.df.filtered$chl),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.18S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.18S.df.filtered.eddycore$chl),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "algae", version = getOption('cmocean-version', '2.0'), breaks = seq(0,8,by=2)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent.18S, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent.18S, "%)")) +
+  labs(fill = expression("Chl-a (mg m"^-3*")"))
+  # +
+  # ggtitle(" IOP-2 18S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_Chl_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+
+
+p4.18S <-positions.18S.surf.env.filtered %>%
+  ggplot(aes(x=PCOA1,y=PCOA2)) +
+  geom_point(aes(fill=environmental.18S.df.filtered$POC/environmental.18S.df.filtered$chl),shape=21,color="transparent",size=2)+
+  geom_point(data=positions.18S.surf.env.filtered.eddycore,
+             aes(x=PCOA1, y=PCOA2, fill = environmental.18S.df.filtered.eddycore$POC/environmental.18S.df.filtered.eddycore$chl),
+             shape=22, size=3, color="black")+
+  scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+    name = "deep", version = getOption('cmocean-version', '2.0'), breaks = seq(0,50,by=5)) +
+    theme_bw()+
+   theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+  xlab(paste0("PCoA1 (", pcoa1_percent.18S, "%)")) +
+  ylab(paste0("PCoA2 (", pcoa2_percent.18S, "%)")) +
+  labs(fill = expression("POC:Chl-a"))
+  # +
+  # ggtitle(" IOP-2 18S Surface")
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_POC_Chl_ratio_eddycoresquares.png"),width = 6, height = 4, dpi=300)
+library(cowplot)
+summary_pcoa_plot_eddyloc.18S <- plot_grid(p1.18S, p2.18S, p3.18S, p4.18S, ncol=2, align="v")
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_env_vars_eddycoresquares.png"),plot = summary_pcoa_plot_eddyloc.18S, width = 10, height = 6, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_PCOA_env_vars_eddycoresquares.svg"),plot = summary_pcoa_plot_eddyloc.18S, width = 10, height = 6, dpi=300)
+
+summary_pcoa_plot_eddyloc.18S
+
+
+# p5.18S <-positions.18S.surf.env.filtered %>%
+#   ggplot(aes(x=PCOA1,y=PCOA2)) +
+#   geom_point(aes(fill=environmental.18S.df.filtered$NO3/environmental.18S.df.filtered$PO4),shape=21,color="transparent",size=2)+
+#   geom_point(data=positions.18S.surf.env.filtered.eddycore,
+#              aes(x=PCOA1, y=PCOA2, fill = environmental.18S.df.filtered.eddycore$NO3/environmental.18S.df.filtered.eddycore$PO4),
+#              shape=22, size=3, color="black")+
+#   scale_fill_cmocean(alpha = 1, start = 0, end = 1, direction = 1, discrete = FALSE,
+#     name = "deep", version = getOption('cmocean-version', '2.0'), breaks = seq(0,50,by=5)) +
+#     theme_bw()+
+#    theme(panel.grid.major = element_blank(),
+#           panel.grid.minor = element_blank())+
+#   xlab(paste0("PCoA1 (", pcoa1_percent.18S, "%)")) +
+#   ylab(paste0("PCoA2 (", pcoa2_percent.18S, "%)")) +
+#   labs(fill = expression("POC:Chl-a"))
+
+```
+
+
+```{r RDA - 18S Phytoplankton}
+
+
+## Before RDA: let's explore the explanatory environmental variables (unscaled)
+
+heatmap(abs(cor(environmental.18S.df.filtered)), 
+        # Compute pearson correlation (note they are absolute values)
+        col = rev(heat.colors(6)), 
+        Colv = NA, Rowv = NA)
+legend("topright", 
+       title = "Absolute Pearson R",
+       legend =  round(seq(0,1, length.out = 6),1),
+       y.intersp = 0.7, bty = "n",
+       fill = rev(heat.colors(6)))
+
+## Standardize the environmental data
+
+# Scale and center variables
+environmental.18S.df.filtered.standard <- decostand(environmental.18S.df.filtered, method = "standardize")
+
+# Variables are now centered around a mean of 0
+round(apply(environmental.18S.df.filtered.standard, 2, mean), 1)
+
+# and scaled to have a standard deviation of 1
+apply(environmental.18S.df.filtered.standard, 2, sd)
+
+
+############################## RUNNING RDA #####################################
+
+## Step 1: Standardize and/or transform the data.
+environmental.18S.df.filtered.standard.sub <- subset(environmental.18S.df.filtered.standard, select = -c(temp,oxygen,chl_fl)) # remove temp and oxygen and chl_fl, as they are highly correlated with other variables.
+# environmental.18S.df.filtered.standard.sub <- subset(environmental.18S.df.filtered.standard, select = -c(temp,oxygen)) # remove temp and oxygen, as they are highly correlaed with other variables.
+
+## Step 2: Run the RDA. Model the effect of environmental variables on bacterioplankton community composition.
+rda.18S.phyto.surf <- rda(species.18S.df.filtered ~ ., data = environmental.18S.df.filtered.standard)
+rda.18S.phyto.surf.sub <- rda(species.18S.df.filtered ~ ., data = environmental.18S.df.filtered.standard.sub) #if choosing not to  subset in advance
+
+
+## Step 3: To simplify this model, perform a forward selection to select variables that are statistically important.
+fwd.sel <- ordiR2step(rda(species.18S.df.filtered ~ 1, data = environmental.18S.df.filtered.standard.sub), # lower model limit (simple!)
+                      scope = formula(rda.18S.phyto.surf.sub), # upper model limit (the "full" model)
+                      direction = "forward",
+                      R2scope = TRUE, # can't surpass the "full" model's R2
+                      pstep = 1000,
+                      trace = FALSE) # change to TRUE to see the selection process!
+
+# if choosing to look at all variables for significance.
+fwd.sel.2 <- ordiR2step(rda(species.18S.df.filtered ~ 1, data = environmental.18S.df.filtered.standard), # lower model limit (simple!)
+                        scope = formula(rda.18S.phyto.surf), # upper model limit (the "full" model)
+                        direction = "forward",
+                        R2scope = TRUE, # can't surpass the "full" model's R2
+                        pstep = 1000,
+                        trace = FALSE) # change to TRUE to see the selection process!
+
+# Check the new model with forward-selected variables
+fwd.sel$call
+# rda(formula = species.18S.df.filtered ~ sigma_T + sal + chl + POC, data = environmental.18S.df.filtered.standard.sub)
+
+fwd.sel.2$call
+# rda(formula = species.18S.df.filtered ~ temp + sigma_T + oxygen + sal + POC + chl, data = environmental.18S.df.filtered.standard)
+
+# Check the significance of individual terms in model
+
+fwd.sel.2$anova
+#                     R2.adj Df     AIC       F Pr(>F)   
+#   + temp          0.16394  1 -76.927 19.8246  0.002 **
+#   + sigma_T       0.21177  1 -81.668  6.7649  0.002 **
+#   + oxygen        0.24965  1 -85.482  5.7448  0.002 **
+#   + sal           0.27594  1 -87.990  4.3769  0.002 **
+#   + POC           0.29821  1 -90.081  3.9200  0.002 **
+#   + chl           0.31111  1 -90.952  2.7033  0.002 **
+#   <All variables> 0.31527                             
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+                
+# Interpretation:
+# temp (R2 = 0.16, p-value = 0.002)
+# sigma_T (R2 = 0.05, p-value = 0.002)
+# oxygen (R2 = 0.03, p-value = 0.002)
+# sal (R2 = 0.03, p-value = 0.002)
+# POC (R2 = 0.02, p-value = 0.002)
+# chl (R2 = 0.02, p-value = 0.002)
+
+# Write our new model
+
+# The following new model only keeps significant variables
+rda.18S.phyto.surf.signif.2 <- rda(species.18S.df.filtered ~ temp + sigma_T + oxygen + sal + POC + chl,
+                             data = environmental.18S.df.filtered.standard)
+
+RsquareAdj(rda.18S.phyto.surf.signif.2)
+# $r.squared
+# [1] 0.3043415
+# 
+# $adj.r.squared
+# [1] 0.2740955
+
+# $r.squared
+# [1] 0.3541638
+# 
+# $adj.r.squared
+# [1] 0.3111081
+
+## Step 4: Significance testing
+
+anova.cca(rda.18S.phyto.surf.signif.2, step = 1000, by = "term")
+# Model: rda(formula = species.18S.df.filtered ~ temp + sigma_T + oxygen + sal + POC + chl, data = environmental.18S.df.filtered.standard)
+#             Df Variance       F Pr(>F)    
+#   temp      1  0.09155 24.0596  0.001 ***
+#   sigma_T   1  0.02945  7.7403  0.001 ***
+#   oxygen    1  0.02381  6.2573  0.001 ***
+#   sal       1  0.01750  4.6003  0.001 ***
+#   POC       1  0.01519  3.9933  0.001 ***
+#   chl       1  0.01029  2.7033  0.007 ** 
+#   Residual 90  0.34245                   
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+## Step 5: Plot
+
+# Type 1 scaling: Distances among objects reflect their similarities
+# ordiplot(rda.18S.phyto.surf.signif.2, scaling = 1, type = "points")
+
+# Type 2 scaling: Angles between variables reflect their correlation
+# ordiplot(rda.18S.phyto.surf.signif.2, scaling = 2, type = "points")
+
+
+################################################################################ 
+
+############## Plotting "best" model ############## 
+rda.18S.phyto.surf.best <- rda.18S.phyto.surf.signif.2
+## extract % explained by the first 2 axes
+perc.best <- round(100*(summary(rda.18S.phyto.surf.best)$cont$importance[2, 1:2]), 2)
+
+## extract scores - these are coordinates in the RDA space
+sc_si.all <- scores(rda.18S.phyto.surf.best, display="sites", choices=c(1,2), scaling=2)
+sc_sp.all <- scores(rda.18S.phyto.surf.best, display="species", choices=c(1,2), scaling=2)
+sc_bp.all <- scores(rda.18S.phyto.surf.best, display="bp", choices=c(1, 2), scaling=2)
+
+# Plot using autoplot
+
+rda.best.plot <- autoplot(rda.18S.phyto.surf.best, layers = c("sites","biplot")) +
+  # theme_classic() +
+  theme_bw() +
+  xlab(paste0("RDA1 (", perc.best[1], "%)")) +
+  ylab(paste0("RDA2 (", perc.best[2], "%)")) +
+  xlim(c(-0.7,0.7)) +
+  theme(legend.position = "none")
+rda.best.plot 
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_RDA_signif_env_vars_sites_biplot.png"),plot = rda.best.plot, width = 4, height = 5, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_RDA_signif_env_vars_sites_biplot.svg"),plot = rda.best.plot, width = 4, height = 5, dpi=300)
+
+###############################################################################
+## Attach nutrient data
+
+sc_si.all.df <- as.data.frame(sc_si.all) %>%
+  mutate(NO3 = metadata.18S.2023.surf[which(metadata.18S.2023.surf$sample_id %in% rownames(sc_si.all)),"NO3"],
+         PO4 = metadata.18S.2023.surf[which(metadata.18S.2023.surf$sample_id %in% rownames(sc_si.all)),"PO4"]
+  )
+
+## Attach salinity and "salinity case"
+
+sc_si.all.df <- sc_si.all.df %>%
+  mutate(sal = metadata.18S.2023.surf[which(metadata.18S.2023.surf$sample_id %in% rownames(sc_si.all)),"sal"]
+  )
+
+sal_threshold <- 32.8
+sal_threshold_eddylow <- 32.95
+sal_threshold_eddyhigh <- 33.05
+
+sc_si.all.df<- sc_si.all.df %>%
+  mutate(
+    sal_case = case_when(
+      sal < sal_threshold ~ "low",
+      (sal >= sal_threshold & sal < sal_threshold_eddylow) ~ "transition",
+      (sal >= sal_threshold_eddylow & sal <sal_threshold_eddyhigh) ~ "eddy-core",
+      sal > sal_threshold_eddyhigh ~ "high",
+      is.na(sal) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+    ))
+
+########### Salinity categories as salinity ranges ########### 
+
+# low: salinity < 32.80
+# transition: 32.80-32.95 
+# eddy-core" salinity = 32.95-33.05
+# high: salinity > 33.05
+
+###############################################################################
+
+# Prep dataframe for plotting RDAs in ggplot
+rda.18S.phyto.surf.best.summary <-summary(rda.18S.phyto.surf.best)
+rda.18S.phyto.surf.best.summary$sites[,1:2]
+rda.18S.phyto.surf.best.summary$cont # proportion of variance explained per axis
+# RDA1 = 27.640%, RDA2 = 6.767%
+# create data frame w/ RDA axes for sites
+# first check rownames of RDA & metadata, then make df
+rownames(rda.18S.phyto.surf.best.summary$sites) %in% rownames(environmental.18S.df.filtered.standard)
+rda.axes.best <- data.frame(RDA1=rda.18S.phyto.surf.best.summary$sites[,1], RDA2=rda.18S.phyto.surf.best.summary$sites[,2], SampleID=rownames(rda.18S.phyto.surf.best.summary$sites), Salinity=environmental.18S.df.filtered$sal, Chl=environmental.18S.df.filtered$chl)
+
+# create data frame w/ RDA axes for variables
+arrows.all<-data.frame(RDA1=rda.18S.phyto.surf.best.summary$biplot[,1], RDA2=rda.18S.phyto.surf.best.summary$biplot[,2], Label=rownames(rda.18S.phyto.surf.best.summary$biplot))
+# arrows.all$Label[(arrows.all$Label) == "temp"] <- "temperature"
+# arrows.all$Label[(arrows.all$Label) == "sal"] <- "salinity"
+
+
+############### Color RDA Results by Salinity Category ############### 
+
+## First, subset the RDA results for eddy core samples only (will be added as markers)
+## Add information about eddy location in environmental.df.filtered
+
+## Load eddy location data
+eddyclass.16S <- read_csv(paste0(data_dir,"SMODE_IOP2_16S_flowthru_eddy_sample_classifications.csv"))
+eddyclass.18S <- eddyclass.16S ## Swap '16S' for '18S' in sample labels
+sample.labels <- eddyclass.16S$ID
+eddyclass.18S$ID <- sub('16S','18S',sample.labels)
+## Add to metadata files
+metadata.18S.2023.surf$Location <- NA
+metadata.18S.2023.surf$Location[which(metadata.18S.2023.surf$sample_id %in% eddyclass.18S$ID)] <- eddyclass.18S$type[which(eddyclass.18S$ID %in% metadata.18S.2023.surf$sample_id)]
+## Filter the location data accordingly
+eddyclass.18S.filtered <- eddyclass.18S %>%
+  filter(eddyclass.18S$ID %in% rownames(environmental.18S.df.filtered))
+## Check it matches
+identical(eddyclass.18S.filtered$ID,rownames(environmental.18S.df.filtered))
+## Combine data frames
+environmental.18S.df.filtered.eddyloc <- environmental.18S.df.filtered %>%
+  mutate(location = eddyclass.18S.filtered$type)
+# Subset eddy core samples in RDA data frame
+environmental.18S.df.filtered.eddycore <- environmental.18S.df.filtered.eddyloc[environmental.18S.df.filtered.eddyloc$location=="COR",]
+rda.axes.best.eddycore <- rda.axes.best %>%
+  filter(rda.axes.best$SampleID %in% rownames(environmental.18S.df.filtered.eddycore))  
+
+## Second, compose plot:
+rda.best.plot.v4.sal.case <-ggplot(rda.axes.best, aes(x = RDA1, y = RDA2)) +
+  geom_point(data=sc_si.all.df, aes(x=RDA1,y=RDA2,color=sal_case)) +
+  geom_point(data=rda.axes.best.eddycore,
+             aes(x=RDA1, y=RDA2),
+             shape=22, size=3, color="black",fill="#F8766D") +
+  geom_segment(data = arrows.all,mapping = aes(x = 0, y = 0, xend = RDA1*0.5, yend = RDA2*0.5),lineend = "round", # See available arrow types in example above
+               linejoin = "round",
+               linewidth = 0.8,
+               arrow = arrow(length = unit(0.1, "inches")),
+               colour = "black") +
+  geom_text(data = arrows.all,aes(label = Label, x = RDA1*0.6, y = RDA2*0.6), size=3.2)+ #use geom_label for rectangle around text
+  coord_fixed(ratio = 1, xlim = c(-0.7,0.7), ylim = c(-0.9,0.7)) +
+  scale_color_discrete(name="Salinity Category") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size=12),axis.title.y = element_text(size=13),
+        axis.text = element_text(size=12),axis.text.x = element_text(vjust=1),
+        plot.margin = unit(c(5, 5, 5, 5), "mm") # Top, Right, Bottom, Left
+  ) +
+  xlab(paste0("RDA1 (", perc.best[1], "%)")) +
+  ylab(paste0("RDA2 (", perc.best[2], "%)"))
+rda.best.plot.v4.sal.case
+
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_RDA_signif_env_vars_sites_biplot_salinity_category_eddycoreSquares.png"),plot = rda.best.plot.v4.sal.case, width = 6, height = 6, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_18S_phyto_surface_RDA_signif_env_vars_sites_biplot_salinity_category_eddycoreSquares.svg"),plot = rda.best.plot.v4.sal.case, width = 6, height = 6, dpi=300)
+
+
+################################################################################ 
+```
+
+```{r RDA - 16S BACTERIA}
+
+#############################################################################
+
+# Prepare your data
+
+# Rows are samples/sites, columns are species
+# Values should be counts or relative abundances
+species.df <- unique.select.ra.helling.2023.surf #IOP-2 16S surface
+
+# Rows are samples/sites (must match species_matrix rows), columns are environmental variables
+# Here, I am choosing only relevant variables from metadata
+
+metadata.2023.surf <- metadata.2023 %>%
+  filter(depth <= 5 | niskin==0) 
+identical(metadata.2023.surf$sample_id,rownames(unique.select.ra.helling.2023.surf))
+
+
+environmental.data <- metadata.2023.surf[, c("temp","sal","sigma_T","oxygen","PAR",
+                                             "chl","chl_fl","POC")]
+rownames(environmental.data) <-  metadata.2023.surf$sample_id
+
+
+# Drop (filter) rows (samples) that have any NAs
+
+environmental.df <- data.frame(environmental.data)
+environmental.df.filtered <- environmental.df %>%
+  drop_na() # Removes rows with NA in col1 or col2
+
+# Filter the sequencing data accordingly
+species.df.filtered <- species.df %>%
+  filter(rownames(species.df) %in% rownames(environmental.df.filtered)) 
+
+identical(rownames(species.df.filtered),rownames(environmental.df.filtered))
+
+# Scale environmental variables
+environmental.matrix.filtered.scaled <- scale(environmental.df.filtered) # there are different options for centering, see ?scale
+environmental.df.filtered.scaled <- data.frame(environmental.matrix.filtered.scaled)
+
+
+# Ensure row names (sample/site identifiers) are identical and in the same order
+# This is crucial for matching species data with environmental data
+if (!identical(rownames(species.df.filtered), rownames(environmental.df.filtered.scaled))) {
+  stop("Row names of species and environmental matrices do not match or are not in the same order.")
+}
+
+#############################################################################
+
+
+## Before RDA: let's explore the explanatory environmental variables (unscaled)
+
+# heatmap(abs(cor(environmental.df.filtered)), 
+#         # Compute pearson correlation (note they are absolute values)
+#         col = rev(heat.colors(6)), 
+#         Colv = NA, Rowv = NA)
+# legend("topright", 
+#        title = "Absolute Pearson R",
+#        legend =  round(seq(0,1, length.out = 6),1),
+#        y.intersp = 0.7, bty = "n",
+#        fill = rev(heat.colors(6)))
+#
+## Standardize the environmental data
+
+# Scale and center variables
+environmental.df.filtered.standard <- decostand(environmental.df.filtered, method = "standardize")
+
+# Variables are now centered around a mean of 0
+round(apply(environmental.df.filtered.standard, 2, mean), 1)
+
+# and scaled to have a standard deviation of 1
+apply(environmental.df.filtered.standard, 2, sd)
+
+## Step 1: Standardize and/or transform the data.
+environmental.df.filtered.standard.sub <- subset(environmental.df.filtered.standard, select = -c(temp,oxygen,chl_fl)) # remove temp and oxygen and chl_fl, as they are highly correlaed with other variables.
+
+
+## Step 2: Run the RDA. Model the effect of environmental variables on bacterioplankton community composition.
+# rda.16S.surf.sub <- rda(species.df.filtered ~ ., data = environmental.df.filtered.standard.sub)
+rda.16S.surf <- rda(species.df.filtered ~ ., data = environmental.df.filtered.standard) #if choosing not to  subset in advance
+
+
+## Step 3: To simplify this model, perform a forward selection to select variables that are statistically important.
+# fwd.sel <- ordiR2step(rda(species.df.filtered ~ 1, data = environmental.df.filtered.standard.sub), # lower model limit (simple!)
+#                       scope = formula(rda.16S.surf.sub), # upper model limit (the "full" model)
+#                       direction = "forward",
+#                       R2scope = TRUE, # can't surpass the "full" model's R2
+#                       pstep = 1000,
+#                       trace = FALSE) # change to TRUE to see the selection process!
+
+# if choosing to look at all variables for significance.
+fwd.sel.2 <- ordiR2step(rda(species.df.filtered ~ 1, data = environmental.df.filtered.standard), # lower model limit (simple!)
+                      scope = formula(rda.16S.surf), # upper model limit (the "full" model)
+                      direction = "forward",
+                      R2scope = TRUE, # can't surpass the "full" model's R2
+                      pstep = 1000,
+                      trace = FALSE) # change to TRUE to see the selection process!
+
+# Check the new model with forward-selected variables
+# fwd.sel$call
+#rda(formula = species.df.filtered ~ sigma_T + chl + POC + sal, data = environmental.df.filtered.standard.sub)
+
+fwd.sel.2$call
+#rda(formula = species.df.filtered ~ sigma_T + oxygen + POC + 
+      #sal + temp + chl + PAR, data = environmental.df.filtered.standard)
+
+# Check the significance of individual terms in model
+
+fwd.sel.2$anova
+#                     R2.adj Df     AIC       F Pr(>F)   
+#   + sigma_T       0.17093  1 -166.43 22.2358  0.002 **
+#   + oxygen        0.24517  1 -175.21 11.0321  0.002 **
+#   + POC           0.29780  1 -181.76  8.5692  0.002 **
+#   + sal           0.34479  1 -188.01  8.1728  0.002 **
+#   + temp          0.38321  1 -193.35  7.1660  0.002 **
+#   + chl           0.39707  1 -194.78  3.2530  0.006 **
+#   + PAR           0.40539  1 -195.30  2.3579  0.026 * 
+#   <All variables> 0.40770                             
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+    # Interpretation:
+    # sigma_T (R2 = 0.17, p-value = 0.002)
+    # oxygen (R2 = 0.074, p-value = 0.002)
+    # POC (R2 = 0.053, p-value = 0.002)
+    # sal (R2 = 0.047, p-value = 0.002)
+    # temp (R2 = 0.038, p-value = 0.002)
+    # chl (R2 = 0.013, p-value = 0.006)
+    # PAR (R2 = 0.008, p-value = 0.026)
+
+# Write our new model
+rda.16S.surf.signif.2 <- rda(species.df.filtered ~ sigma_T + oxygen + POC + sal + temp + chl + PAR,
+                             data = environmental.df.filtered.standard)
+
+RsquareAdj(rda.16S.surf.signif.2)
+# $r.squared
+# [1] 0.4458047
+# 
+# $adj.r.squared
+# [1] 0.4053947
+ 
+
+## Step 4: Significance testing
+
+anova.cca(rda.16S.surf.signif.2, step = 1000, by = "term")
+# Permutation test for rda under reduced model
+# Terms added sequentially (first to last)
+# Permutation: free
+# Number of permutations: 999
+# 
+# Model: rda(formula = species.df.filtered ~ sigma_T + oxygen + POC + sal + temp + chl + PAR, data = environmental.df.filtered.standard)
+#   Df Variance       F Pr(>F)    
+#   sigma_T   1 0.042753 31.0038  0.001 ***
+#   oxygen    1 0.019312 14.0048  0.001 ***
+#   POC       1 0.013955 10.1199  0.001 ***
+#   sal       1 0.012419  9.0058  0.001 ***
+#   temp      1 0.010250  7.4334  0.001 ***
+#   chl       1 0.004548  3.2985  0.009 ** 
+#   PAR       1 0.003251  2.3579  0.047 *  
+#   Residual 96 0.132379                   
+# ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+
+## Step 5: Plot
+
+# Type 1 scaling: Distances among objects reflect their similarities
+# ordiplot(rda.16S.surf.signif, scaling = 1, type = "points")
+# ordiplot(rda.16S.surf.signif.2, scaling = 1, type = "points")
+
+# Type 2 scaling: Angles between variables reflect their correlation
+# ordiplot(rda.16S.surf.signif, scaling = 2, type = "points")
+# ordiplot(rda.16S.surf.signif.2, scaling = 2, type = "points")
+
+# Note: default scaling for scores() and autoplot() is type 2, so must specify type 1 if that is what you want.
+
+################################################################################ 
+
+############## Plotting "best" model ############## 
+rda.16S.surf.best <- rda.16S.surf.signif.2
+## extract % explained by the first 2 axes
+perc.best <- round(100*(summary(rda.16S.surf.best)$cont$importance[2, 1:2]), 2)
+
+## extract scores - these are coordinates in the RDA space
+sc_si.all <- scores(rda.16S.surf.best, display="sites", choices=c(1,2), scaling=2)
+sc_sp.all <- scores(rda.16S.surf.best, display="species", choices=c(1,2), scaling=2)
+sc_bp.all <- scores(rda.16S.surf.best, display="bp", choices=c(1, 2), scaling=2)
+
+# Plot using autoplot (uses Type 2 scaling by default)
+
+# rda.best.plot <- autoplot(rda.16S.surf.best, layers = c("sites","biplot")) +
+#   geom_point(size=10) +
+#   # geom_point(data = sc_si.all, aes(x=RDA1,y=RDA2,color='blue'))+
+#   theme_bw() +
+#   xlab(paste0("RDA1 (", perc.best[1], "%)")) +
+#   ylab(paste0("RDA2 (", perc.best[2], "%)")) +
+#   theme(legend.position = "none")
+# rda.best.plot 
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_RDA_signig_env_vars_sites_biplot.png"),plot = rda.best.plot, width = 10, height = 6, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_RDA_signif_env_vars_sites_biplot.svg"),plot = rda.best.plot, width = 10, height = 6, dpi=300)
+
+###############################################################################
+## Attach nutrient data
+
+sc_si.all.df <- as.data.frame(sc_si.all) %>%
+  mutate(NO3 = metadata.2023.surf[which(metadata.2023.surf$sample_id %in% rownames(sc_si.all)),"NO3"],
+         PO4 = metadata.2023.surf[which(metadata.2023.surf$sample_id %in% rownames(sc_si.all)),"PO4"]
+  )
+
+###############################################################################
+
+# Prep dataframe for plotting RDAs in ggplot
+rda.16S.surf.best.summary <-summary(rda.16S.surf.signif.2)
+rda.16S.surf.best.summary$sites[,1:2]
+rda.16S.surf.best.summary$cont # proportion of variance explained per axis
+# RDA1 = 27.640%, RDA2 = 6.767%
+# create data frame w/ RDA axes for sites
+# first check rownames of RDA & metadata, then make df
+rownames(rda.16S.surf.best.summary$sites) %in% rownames(environmental.df.filtered.standard)
+rda.axes.best <- data.frame(RDA1=rda.16S.surf.best.summary$sites[,1], RDA2=rda.16S.surf.best.summary$sites[,2], SampleID=rownames(rda.16S.surf.best.summary$sites), Salinity=environmental.df.filtered$sal, Chl=environmental.df.filtered$chl)
+
+# create data frame w/ RDA axes for variables
+arrows.all<-data.frame(RDA1=rda.16S.surf.best.summary$biplot[,1], RDA2=rda.16S.surf.best.summary$biplot[,2], Label=rownames(rda.16S.surf.best.summary$biplot))
+# arrows.all$Label[(arrows.all$Label) == "temp"] <- "temperature"
+# arrows.all$Label[(arrows.all$Label) == "sal"] <- "salinity"
+
+###############################################################################
+
+## Attach salinity and "salinity case"
+
+sc_si.all.df <- sc_si.all.df %>%
+  mutate(sal = metadata.2023.surf[which(metadata.2023.surf$sample_id %in% rownames(sc_si.all)),"sal"]
+  )
+
+sal_threshold <- 32.8
+sal_threshold_eddylow <- 32.95
+sal_threshold_eddyhigh <- 33.05
+
+sc_si.all.df <- sc_si.all.df %>%
+  mutate(
+    sal_case = case_when(
+      sal < sal_threshold ~ "low",
+      (sal >= sal_threshold & sal < sal_threshold_eddylow) ~ "transition",
+      (sal >= sal_threshold_eddylow & sal <sal_threshold_eddyhigh) ~ "eddy-core",
+      sal > sal_threshold_eddyhigh ~ "high",
+      is.na(sal) ~ NA_character_, # Handle NA values explicitly
+      TRUE ~ NA_character_ # Default case if none of the above match
+    ))
+
+
+########### Salinity categories as salinity ranges ########### 
+
+# low: salinity < 32.80
+# transition: 32.80-32.95 
+# eddy-core" salinity = 32.95-33.05
+# high: salinity > 33.05
+
+###############################################################################
+
+############### Color RDA Results by Salinity Category ############### 
+
+## First, subset the RDA results for eddy core samples only (will be added as markers)
+## Add information about eddy location in environmental.df.filtered
+
+## Load eddy location data
+eddyclass.16S <- read_csv(paste0(data_dir,"SMODE_IOP2_16S_flowthru_eddy_sample_classifications.csv"))
+## Add to metadata files
+metadata.2023.surf$Location <- NA
+metadata.2023.surf$Location[which(metadata.2023.surf$sample_id %in% eddyclass.16S$ID)] <- eddyclass.16S$type[which(eddyclass.16S$ID %in% metadata.2023.surf$sample_id)]
+## Filter the location data accordingly
+eddyclass.16S.filtered <- eddyclass.16S %>%
+  filter(eddyclass.16S$ID %in% rownames(environmental.df.filtered))
+## Check it matches
+identical(eddyclass.16S.filtered$ID,rownames(environmental.df.filtered))
+## Combine data frames
+environmental.df.filtered.eddyloc <- environmental.df.filtered %>%
+  mutate(location = eddyclass.16S.filtered$type)
+# Subset eddy core samples in RDA data frame
+environmental.df.filtered.eddycore <- environmental.df.filtered.eddyloc[environmental.df.filtered.eddyloc$location=="COR",]
+rda.axes.best.eddycore <- rda.axes.best %>%
+  filter(rda.axes.best$SampleID %in% rownames(environmental.df.filtered.eddycore))  
+
+## Second, compose plot:
+
+rda.all.16S.plot.sal.case <-ggplot(rda.axes.best, aes(x = RDA1, y = RDA2)) +
+  geom_point(data=sc_si.all.df, aes(x=RDA1,y=RDA2,color=sal_case)) +
+  geom_point(data=rda.axes.best.eddycore,
+             aes(x=RDA1, y=RDA2),
+             shape=22, size=3, color="black",fill="#F8766D") +
+  geom_segment(data = arrows.all,mapping = aes(x = 0, y = 0, xend = RDA1*0.5, yend = RDA2*0.5),lineend = "round", # See available arrow types in example above
+               linejoin = "round",
+               linewidth = 0.8,
+               arrow = arrow(length = unit(0.1, "inches")),
+               colour = "black") +
+  geom_text(data = arrows.all,aes(label = Label, x = RDA1*0.6, y = RDA2*0.6), size=3.2)+ #use geom_label for rectangle around text
+  coord_fixed(ratio = 1, xlim = c(-0.5,0.5), ylim = c(-0.6,0.6)) +
+  scale_color_discrete(name="Salinity Category") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size=12),axis.title.y = element_text(size=13),
+        axis.text = element_text(size=12),axis.text.x = element_text(vjust=1),
+        plot.margin = unit(c(5, 5, 5, 5), "mm") # Top, Right, Bottom, Left
+  ) +
+  xlab(paste0("RDA1 (", perc.best[1], "%)")) +
+  ylab(paste0("RDA2 (", perc.best[2], "%)"))
+
+rda.all.16S.plot.sal.case
+
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_RDA_signif_env_vars_sites_biplot_salinity_category_eddycoreSquares.png"),plot = rda.all.16S.plot.sal.case, width = 6, height = 6, dpi=300)
+# ggsave(paste0(fig_dir,"IOP2_16S_surface_RDA_signif_env_vars_sites_biplot_salinity_category_eddycoreSquares.svg"),plot = rda.all.16S.plot.sal.case, width = 6, height = 6, dpi=300)
+
+
+###############################################################################
+```
+
